@@ -37,6 +37,10 @@ PAGE_SIZE = 500
 
 # ── Emby API ──────────────────────────────────────────────────────────────────
 
+def _auth_headers(api_key: str) -> dict:
+    return {"X-Emby-Token": api_key}
+
+
 def get_items(server: str, api_key: str) -> list[dict]:
     """
     Fetch all Episode items that have chapter data,
@@ -48,8 +52,8 @@ def get_items(server: str, api_key: str) -> list[dict]:
     while True:
         resp = requests.get(
             f"{server}/emby/Items",
+            headers=_auth_headers(api_key),
             params={
-                "api_key": api_key,
                 "IncludeItemTypes": "Episode",
                 "Recursive": "true",
                 "Fields": "Chapters,Path",
@@ -81,7 +85,7 @@ def get_extraction_task_id(server: str, api_key: str) -> str | None:
     """Find the scheduled task ID for Video Preview Thumbnail Extraction."""
     resp = requests.get(
         f"{server}/emby/ScheduledTasks",
-        params={"api_key": api_key},
+        headers=_auth_headers(api_key),
         timeout=10,
     )
     resp.raise_for_status()
@@ -95,7 +99,7 @@ def trigger_extraction_task(server: str, api_key: str, task_id: str) -> bool:
     """POST to trigger the extraction scheduled task. Returns True on success."""
     resp = requests.post(
         f"{server}/emby/ScheduledTasks/Running/{task_id}",
-        params={"api_key": api_key},
+        headers=_auth_headers(api_key),
         timeout=10,
     )
     return resp.status_code == 204
@@ -109,8 +113,8 @@ def refresh_item(server: str, api_key: str, item_id: str) -> bool:
     """
     resp = requests.post(
         f"{server}/emby/Items/{item_id}/Refresh",
+        headers=_auth_headers(api_key),
         params={
-            "api_key": api_key,
             "MetadataRefreshMode": "Default",
             "ReplaceAllImages": "false",
             "ReplaceAllMetadata": "false",
@@ -128,6 +132,13 @@ def missing_image_tag_count(item: dict) -> int:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+def _non_negative_float(value: str) -> float:
+    v = float(value)
+    if v < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return v
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -158,7 +169,7 @@ def main():
     )
     parser.add_argument(
         "--refresh-delay",
-        type=float,
+        type=_non_negative_float,
         default=0.1,
         metavar="SECONDS",
         help=(
@@ -186,7 +197,7 @@ def main():
     print("Fetching chaptered items from Emby...")
     try:
         items = get_items(args.server, args.api_key)
-    except requests.HTTPError as e:
+    except requests.RequestException as e:
         print(f"Error fetching items: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -248,14 +259,14 @@ def main():
                 time.sleep(args.refresh_delay)
         print(f"  Refreshed {total - failed}/{total} item(s)"
               f"{f', {failed} failed' if failed else ''}.")
-        print(f"\nWaiting 5 seconds for server to process refresh queue...")
+        print("\nWaiting 5 seconds for server to process refresh queue...")
         time.sleep(5)
 
     # ── Trigger extraction task ───────────────────────────────────────────────
     print("\nLooking up 'Video Preview Thumbnail Extraction' scheduled task...")
     try:
         task_id = get_extraction_task_id(args.server, args.api_key)
-    except requests.HTTPError as e:
+    except requests.RequestException as e:
         print(f"Error fetching scheduled tasks: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -266,7 +277,11 @@ def main():
         )
         return
 
-    success = trigger_extraction_task(args.server, args.api_key, task_id)
+    try:
+        success = trigger_extraction_task(args.server, args.api_key, task_id)
+    except requests.RequestException as e:
+        print(f"Error triggering extraction task: {e}", file=sys.stderr)
+        sys.exit(1)
     if success:
         print(f"✓ Extraction task triggered successfully (ID: {task_id})")
     else:

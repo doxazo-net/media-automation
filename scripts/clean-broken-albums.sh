@@ -127,32 +127,38 @@ refresh_and_search_artist() {
     ARTIST_REFRESHED["$artist_id"]=1
 
     # RefreshArtist rescans disk for this artist
-    lidarr_api POST "/command" \
+    if ! lidarr_api POST "/command" \
         "{\"name\": \"RefreshArtist\", \"artistId\": ${artist_id}}" \
-        >/dev/null 2>&1 || true
+        >/dev/null 2>&1; then
+        echo "  [lidarr] WARNING: RefreshArtist failed for $artist_name (id=$artist_id)" >&2
+        ((LIDARR_FAILURES++)) || true
+    fi
 
     # MissingAlbumSearch triggers download for any missing albums
-    lidarr_api POST "/command" \
+    if ! lidarr_api POST "/command" \
         "{\"name\": \"MissingAlbumSearch\", \"artistId\": ${artist_id}}" \
-        >/dev/null 2>&1 || true
+        >/dev/null 2>&1; then
+        echo "  [lidarr] WARNING: MissingAlbumSearch failed for $artist_name (id=$artist_id)" >&2
+        ((LIDARR_FAILURES++)) || true
+    fi
 
     echo "  [lidarr] queued refresh + missing search for: $artist_name (id=$artist_id)"
 }
 
 # --- File deletion ---
 
-build_find_args() {
-    local args=()
-    for i in "${!AUDIO_EXTENSIONS[@]}"; do
-        if [[ $i -gt 0 ]]; then
-            args+=(-o)
-        fi
-        args+=(-iname "*.${AUDIO_EXTENSIONS[$i]}")
-    done
-    echo "${args[@]}"
-}
+# Build the find predicates once, as an array. Array form (not a flat string +
+# eval) is required so paths in broken.txt with shell metacharacters can never
+# be evaluated as commands.
+FIND_ARGS=()
+for i in "${!AUDIO_EXTENSIONS[@]}"; do
+    if [[ $i -gt 0 ]]; then
+        FIND_ARGS+=(-o)
+    fi
+    FIND_ARGS+=(-iname "*.${AUDIO_EXTENSIONS[$i]}")
+done
 
-FIND_NAMES=$(build_find_args)
+LIDARR_FAILURES=0
 
 # Pre-load Lidarr data if we'll need it
 if $LIDARR_RESCAN; then
@@ -178,7 +184,7 @@ while IFS= read -r dir; do
             continue
         fi
 
-        mapfile -t audio_files < <(eval "find \"$dir\" -type f \( $FIND_NAMES \)")
+        mapfile -t audio_files < <(find "$dir" -type f \( "${FIND_ARGS[@]}" \))
 
         if [[ ${#audio_files[@]} -eq 0 ]]; then
             echo "SKIP (no audio): $dir"
@@ -230,4 +236,9 @@ else
     if $LIDARR_RESCAN; then
         echo "Lidarr: $lidarr_matched albums queued for rescan+search, $lidarr_missed not found in Lidarr"
     fi
+fi
+
+if (( LIDARR_FAILURES > 0 )); then
+    echo "Lidarr: $LIDARR_FAILURES API call(s) failed (see warnings above)" >&2
+    exit 1
 fi
