@@ -19,7 +19,7 @@ dotenvy = "0.15"
 env_logger = "0.11"
 hostname = "0.4.2"
 inquire = "0.9"
-log = "0.4.29"
+log = "0.4.30"
 ratatui = "0.30"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
