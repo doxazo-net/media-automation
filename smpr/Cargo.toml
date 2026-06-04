@@ -28,7 +28,7 @@ tempfile = "3.27.0"
 toml = "1.1"
 unicode-width = "0.2.2"
 ureq = { version = "3", features = ["json"] }
-uuid = { version = "1.23.1", features = ["v4"] }
+uuid = { version = "1.23.2", features = ["v4"] }
 
 [profile.release]
 strip = true
