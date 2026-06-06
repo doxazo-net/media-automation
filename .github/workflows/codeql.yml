@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [rust, actions]
+        language: [rust, actions, python]
 
     steps:
       - name: Checkout
