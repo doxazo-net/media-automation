@@ -51,6 +51,7 @@ import sys
 import signal
 import json
 import time
+import shlex
 import shutil
 import struct
 import subprocess
@@ -147,6 +148,331 @@ RSGAIN_BIN = '/mnt/vms/utils/rsgain/rsgain'
 BPMTAGGER_MARKER = 'bpmtag.py'
 
 log = logging.getLogger('lidarr-import')
+
+# ---------------------------------------------------------------------------
+# Dependency preflight
+# ---------------------------------------------------------------------------
+
+
+def detect_platform(platform=None, unraid_marker='/etc/unraid-version'):
+    """Return 'mac' | 'unraid' | 'linux' | 'unknown'.
+
+    Args are injectable for testing; defaults read the real environment.
+    """
+    plat = platform if platform is not None else sys.platform
+    if plat == 'darwin':
+        return 'mac'
+    if os.path.exists(unraid_marker):
+        return 'unraid'
+    if plat.startswith('linux'):
+        return 'linux'
+    return 'unknown'
+
+
+class Dependency:
+    """One optional tool the script can use.
+
+    check()        -> True when the tool is already present.
+    needed_when(args, scan) -> True when THIS run will use it.
+    packages       -> {manager: package-name} for 'pip' / 'brew' / 'un-get'.
+    optional       -> reported for information only; never auto-installed.
+    """
+
+    def __init__(self, name, kind, check, enables, packages,
+                 needed_when=lambda args, scan: False, optional=False):
+        self.name = name
+        self.kind = kind            # 'pip' | 'binary'
+        self.check = check          # () -> bool
+        self.enables = enables
+        self.packages = packages    # {'pip'|'brew'|'un-get': 'pkg'}
+        self.needed_when = needed_when
+        self.optional = optional
+
+
+def _have(binary):
+    return shutil.which(binary) is not None
+
+
+def build_dependencies():
+    """Return the static dependency table."""
+    return [
+        Dependency(
+            'mutagen', 'pip', lambda: _HAS_MUTAGEN,
+            'BPM tagging and audio tag reads',
+            {'pip': 'mutagen'},
+            needed_when=lambda args, scan: not args.skip_bpm,
+        ),
+        Dependency(
+            'essentia', 'pip', lambda: _HAS_ESSENTIA,
+            'BPM detection',
+            {'pip': 'essentia'},
+            needed_when=lambda args, scan: not args.skip_bpm,
+        ),
+        Dependency(
+            'cv2', 'pip', lambda: _HAS_CV2,
+            'higher-quality disc-art cropping (ImageMagick fallback exists)',
+            {'pip': 'opencv-python-headless'},
+            optional=True,
+        ),
+        Dependency(
+            'magick', 'binary', lambda: _have('magick'),
+            'TIFF/WEBP artwork conversion',
+            {'brew': 'imagemagick', 'un-get': 'imagemagick'},
+            needed_when=lambda args, scan: scan['convertible'],
+        ),
+        Dependency(
+            'ffmpeg', 'binary', lambda: _have('ffmpeg'),
+            'animated artwork (folder.mp4) to looping GIF',
+            {'brew': 'ffmpeg', 'un-get': 'ffmpeg'},
+            needed_when=lambda args, scan: scan['animated'],
+        ),
+        Dependency(
+            'rsgain', 'binary', lambda: _have('rsgain'),
+            'ReplayGain tagging',
+            {'brew': 'rsgain', 'un-get': 'rsgain'},
+            needed_when=lambda args, scan: not args.no_rsgain,
+        ),
+        Dependency(
+            'git', 'binary', lambda: _have('git'),
+            'repo checkout and manual updates',
+            {'brew': 'git', 'un-get': 'git'},
+            optional=True,
+        ),
+    ]
+
+
+def scan_artwork_kinds(album_dirs):
+    """Scan album dirs once for facts that decide which tools this run needs.
+
+    Returns {'convertible': bool, 'animated': bool}.
+    """
+    result = {'convertible': False, 'animated': False}
+    for directory in album_dirs:
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for name in entries:
+            base, ext = os.path.splitext(name)
+            ext = ext.lower()
+            if ext in CONVERTIBLE_IMAGE_FORMATS:
+                result['convertible'] = True
+            if ext in ANIMATED_ART_EXTENSIONS and base.lower() == 'folder':
+                result['animated'] = True
+        if result['convertible'] and result['animated']:
+            break
+    return result
+
+
+def needed_dependencies(deps, args, scan):
+    """Missing, non-optional deps that THIS run will actually use."""
+    return [d for d in deps
+            if not d.optional and not d.check() and d.needed_when(args, scan)]
+
+
+def optional_missing_dependencies(deps):
+    """Missing optional deps - reported for info, never auto-installed."""
+    return [d for d in deps if d.optional and not d.check()]
+
+
+def install_command_for(dep, platform):
+    """Return the argv list to install dep on platform, or None if unsupported.
+
+    pip always uses the current interpreter so it lands where imports resolve.
+    Binaries route to brew (mac) / un-get (unraid); other platforms print-only.
+    """
+    if dep.kind == 'pip':
+        return [sys.executable, '-m', 'pip', 'install', dep.packages['pip']]
+    if platform == 'mac':
+        return ['brew', 'install', dep.packages.get('brew', dep.name)]
+    if platform == 'unraid':
+        return ['un-get', 'install', dep.packages.get('un-get', dep.name)]
+    return None
+
+
+def install_dependency(dep, platform):
+    """Install dep; return True on success. Never raises - failure is logged."""
+    cmd = install_command_for(dep, platform)
+    if cmd is None:
+        log.info("  No package manager configured for %s on %s - install manually",
+                 dep.name, platform)
+        return False
+    printable = ' '.join(cmd)
+    log.info("  Installing %s: %s", dep.name, printable)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except FileNotFoundError:
+        log.warning("  %s not found - install %s manually: %s",
+                    cmd[0], dep.name, printable)
+        return False
+    except subprocess.TimeoutExpired:
+        log.warning("  install of %s timed out", dep.name)
+        return False
+    if result.returncode != 0:
+        log.warning("  install of %s failed: %s",
+                    dep.name, (result.stderr or '').strip())
+        if platform == 'unraid' and dep.kind == 'binary':
+            log.warning("  un-get may not carry %s - install via NerdTools or "
+                        "another plugin", dep.name)
+        return False
+    return True
+
+
+def write_idempotent_block(path, marker, body):
+    """Insert or replace a fenced block in a file, identified by marker.
+
+    Re-running with the same marker replaces the prior block rather than
+    appending a duplicate. Creates the file if absent.
+    """
+    start = "# >>> %s >>>" % marker
+    end = "# <<< %s <<<" % marker
+    block = "%s\n%s\n%s" % (start, body, end)
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+    except FileNotFoundError:
+        content = ''
+    if start in content and end in content and content.index(start) < content.index(end):
+        i = content.index(start)
+        j = content.index(end) + len(end)
+        new_content = content[:i] + block + content[j:]
+    else:
+        prefix = content if (content == '' or content.endswith('\n')) else content + '\n'
+        new_content = prefix + block + '\n'
+    with open(path, 'w') as f:
+        f.write(new_content)
+
+
+USER_SCRIPTS_DIR = '/boot/config/plugins/user.scripts/scripts'
+GO_FILE = '/boot/config/go'
+BOOT_MARKER = 'ImportLidarrManual boot setup'
+IL_LINK_PATH = '/usr/local/bin/il'
+
+
+def boot_script_body(pip_packages, script_path):
+    """Lines a boot script runs: reinstall wiped pip libs, recreate il symlink."""
+    lines = []
+    if pip_packages:
+        lines.append('python3 -m pip install ' + ' '.join(sorted(pip_packages)))
+    lines.append('ln -sf %s %s' % (shlex.quote(script_path), shlex.quote(IL_LINK_PATH)))
+    return '\n'.join(lines)
+
+
+def write_boot_persistence(pip_packages, script_path,
+                           user_scripts_dir=USER_SCRIPTS_DIR, go_file=GO_FILE):
+    """Make pip libs + il symlink survive an Unraid reboot.
+
+    Prefer the User Scripts plugin dir; fall back to the go file. Returns the
+    path written.
+    """
+    body = boot_script_body(pip_packages, script_path)
+    if os.path.isdir(user_scripts_dir):
+        dest_dir = os.path.join(user_scripts_dir, 'importlidarr-boot')
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, 'script')
+        content = ("#!/bin/bash\n"
+                   "#name=importlidarr-boot\n"
+                   "#description=Reinstall ImportLidarrManual pip deps and il symlink\n"
+                   "\n" + body + "\n")
+        # This file is fully managed by smpr: rewritten verbatim each run.
+        # (Unlike the go-file path, which only replaces its fenced block.)
+        with open(dest, 'w') as f:
+            f.write(content)
+        os.chmod(dest, 0o755)
+        log.info("  Wrote User Scripts entry: %s", dest)
+        log.info("  One-time: set it to 'At Startup of Array' in the Unraid "
+                 "User Scripts UI.")
+        return dest
+    write_idempotent_block(go_file, BOOT_MARKER, body)
+    log.info("  Updated %s with a boot block (pip deps + il symlink)", go_file)
+    return go_file
+
+
+def ensure_il_symlink(script_path, link_path=IL_LINK_PATH):
+    """Point link_path at script_path. Idempotent; never raises."""
+    try:
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            if os.path.realpath(link_path) == os.path.realpath(script_path):
+                return True
+            os.remove(link_path)
+        os.symlink(script_path, link_path)
+        log.info("  Linked %s -> %s", link_path, script_path)
+        return True
+    except OSError as exc:
+        log.warning("  Could not create %s -> %s: %s", link_path, script_path, exc)
+        return False
+
+
+def preflight_dependencies(args, album_dirs, interactive=None):
+    """Report missing tools this run needs and offer to install them.
+
+    Non-fatal throughout: declining leaves a feature disabled and the run
+    continues. On Unraid, after reinstalling wiped pip libs, offers to write a
+    reboot-survivable boot script and the `il` symlink.
+    """
+    if getattr(args, 'no_preflight', False):
+        return
+
+    platform = detect_platform()
+    scan = scan_artwork_kinds(album_dirs)
+    deps = build_dependencies()
+    needed = needed_dependencies(deps, args, scan)
+    optional_missing = optional_missing_dependencies(deps)
+
+    if not needed and not optional_missing:
+        log.debug("All dependencies present")
+        return
+
+    log.info("")
+    log.info("=" * 60)
+    log.info("DEPENDENCY PREFLIGHT (platform: %s)", platform)
+    log.info("=" * 60)
+
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    installed_pip = []
+
+    for dep in needed:
+        cmd = install_command_for(dep, platform)
+        log.info("Missing: %s - enables %s", dep.name, dep.enables)
+        if cmd is None:
+            log.info("  Install %s manually on this platform (no package manager configured).",
+                     dep.name)
+            continue
+        log.info("  Install: %s", ' '.join(cmd))
+        if not interactive:
+            log.info("  Non-interactive run; run the command above to install.")
+            continue
+        try:
+            answer = input("  Install %s now? [y/N] " % dep.name).strip().lower()
+        except EOFError:
+            answer = 'n'
+        if answer in ('y', 'yes'):
+            if install_dependency(dep, platform):
+                log.info("  Installed %s", dep.name)
+                if dep.kind == 'pip':
+                    installed_pip.append(dep.packages['pip'])
+            else:
+                log.warning("  Could not install %s - continuing without it", dep.name)
+        else:
+            log.info("  Skipped %s (%s disabled)", dep.name, dep.enables)
+
+    for dep in optional_missing:
+        log.info("Optional (absent): %s - would enable %s", dep.name, dep.enables)
+
+    if installed_pip and platform == 'unraid' and interactive:
+        try:
+            answer = input("  Make reinstalled pip libs survive reboot "
+                           "(write boot script + il symlink)? [y/N] ").strip().lower()
+        except EOFError:
+            answer = 'n'
+        if answer in ('y', 'yes'):
+            script_path = os.path.abspath(__file__)
+            write_boot_persistence(installed_pip, script_path)
+            ensure_il_symlink(script_path)
+
+    log.info("=" * 60)
+
 
 # ---------------------------------------------------------------------------
 # Lidarr API client
@@ -2351,6 +2677,8 @@ def parse_args():
                    help='Remote (Lidarr/Docker) path prefix, e.g. /share')
     p.add_argument('--no-rsgain', action='store_true',
                    help='Skip rsgain ReplayGain tagging (enabled by default)')
+    p.add_argument('--no-preflight', action='store_true',
+                   help='Skip the startup dependency check/installer')
     p.add_argument('--skip-bpm', action='store_true',
                    help='Skip BPM detection and tagging (enabled by default)')
     p.add_argument('--force-bpm', action='store_true',
@@ -2419,6 +2747,17 @@ def main():
         log.info("This exceeds Lidarr's 100-file limit for manual import - "
                  "the per-album approach will work around it")
 
+    # Find album directories (needed for the run-aware dependency preflight)
+    album_dirs = find_album_dirs(import_path)
+    if not album_dirs:
+        log.warning("No album directories with audio files found under %s",
+                    import_path)
+        sys.exit(0)
+    log.info("Found %d album directories to process", len(album_dirs))
+
+    # Dependency preflight before any network work
+    preflight_dependencies(args, album_dirs)
+
     client = LidarrClient(args.url, args.api_key)
 
     # Verify connectivity
@@ -2432,15 +2771,6 @@ def main():
     except Exception as exc:
         log.error("Cannot connect to Lidarr at %s: %s", args.url, exc)
         sys.exit(1)
-
-    # Find album directories
-    album_dirs = find_album_dirs(import_path)
-    if not album_dirs:
-        log.warning("No album directories with audio files found under %s",
-                    import_path)
-        sys.exit(0)
-
-    log.info("Found %d album directories to process", len(album_dirs))
 
     # Pre-flight: add missing albums to library
     if args.prepare or args.prepare_only:
