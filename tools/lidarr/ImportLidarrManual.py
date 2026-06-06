@@ -2771,21 +2771,24 @@ def process_album_dir(client: LidarrClient, album_dir: str,
 # ---------------------------------------------------------------------------
 
 def redact_url(url: str) -> str:
-    """Return url with any userinfo (user:pass@) stripped, safe for logging.
+    """Return a log-safe URL string with credentials removed.
 
     A Lidarr URL normally carries no credentials (auth is the X-Api-Key header),
     but a user could embed `user:pass@` in the configured URL. Strip it before
     the URL reaches any log sink so embedded credentials never appear in output.
+
+    This helper is intentionally fail-closed: if parsing fails, never return the
+    original input because it may contain sensitive data.
     """
     try:
         parts = urllib.parse.urlsplit(url)
     except ValueError:
-        return url
-    if parts.username is None and parts.password is None:
-        return url
+        return '[redacted-url]'
+
     host = parts.hostname or ''
     if parts.port is not None:
         host = '%s:%d' % (host, parts.port)
+
     return urllib.parse.urlunsplit(
         (parts.scheme, host, parts.path, parts.query, parts.fragment))
 
