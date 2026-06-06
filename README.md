@@ -7,8 +7,10 @@ Automation tools for home media servers — Emby, Jellyfin, Lidarr, comics.
 ```text
 .
 ├── smpr/             Rust CLI for parental ratings (the main app)
-├── tools/            Standalone Python tools
-├── scripts/          Shell utilities
+├── tools/
+│   ├── lidarr/       Lidarr manual-import workaround (+ setup guide)
+│   ├── emby/         Emby maintenance tools
+│   └── library/      Music/library maintenance shell utilities
 └── docs/specs/       Specifications for unbuilt tools
 ```
 
@@ -30,7 +32,7 @@ lyrics from your server, detects explicit language using tiered word detection
 
 Pre-built binaries on [GitHub Releases](https://github.com/sydlexius/media-automation/releases).
 
-### [tools/ImportLidarrManual.py](tools/ImportLidarrManual.py) — Lidarr Manual Import Workaround
+### [tools/lidarr/ImportLidarrManual.py](tools/lidarr/ImportLidarrManual.py) — Lidarr Manual Import Workaround
 
 Bypasses two Lidarr limitations:
 
@@ -48,9 +50,12 @@ album's destination and runs quality-gating so FLAC isn't replaced by MP3
 (`--ignore-quality` to bypass, `--auto-quality` to auto-resolve ambiguous
 cases). Empty source directories are cleaned up after a successful import.
 
-Stdlib-only Python 3.6+ — no `pip install` needed.
+Stdlib-only Python 3.6+ — no `pip install` needed. Optional tools (ImageMagick,
+ffmpeg, rsgain, and pip libraries) are detected at startup by a dependency
+preflight that can install them for you; see
+[tools/lidarr/README.md](tools/lidarr/README.md) for macOS and Unraid setup.
 
-### [tools/emby_bif_audit.py](tools/emby_bif_audit.py) — Emby Chapter Thumbnail Audit
+### [tools/emby/emby_bif_audit.py](tools/emby/emby_bif_audit.py) — Emby Chapter Thumbnail Audit
 
 Identifies Emby video items with missing chapter thumbnail `ImageTags`
 (blank or missing trickplay frames). Optionally refreshes their metadata
@@ -62,28 +67,28 @@ won't retry on its own.
 
 Requires `requests`.
 
-## Scripts
+## Library maintenance scripts
 
-### [scripts/clean-broken-albums.sh](scripts/clean-broken-albums.sh)
+### [tools/library/clean-broken-albums.sh](tools/library/clean-broken-albums.sh)
 
 Removes audio files from album directories listed in a plain-text file
 (`broken.txt` by default), while preserving sidecar files (`.lrc`, `.jpg`,
 `cover.png`, etc.). Optionally triggers a targeted Lidarr rescan per
 album so the library reflects the deletions.
 
-Format the input file like [scripts/broken.txt.example](scripts/broken.txt.example).
+Format the input file like [tools/library/broken.txt.example](tools/library/broken.txt.example).
 Your own `broken.txt` is gitignored.
 
 ```bash
 # dry run, no Lidarr rescan
-./scripts/clean-broken-albums.sh --dry-run
+./tools/library/clean-broken-albums.sh --dry-run
 
 # real run, plus per-album Lidarr rescans
 LIDARR_URL=http://localhost:8686 LIDARR_API_KEY=... \
-  ./scripts/clean-broken-albums.sh --lidarr-rescan
+  ./tools/library/clean-broken-albums.sh --lidarr-rescan
 ```
 
-### [scripts/fix-unsynced-lrc.sh](scripts/fix-unsynced-lrc.sh)
+### [tools/library/fix-unsynced-lrc.sh](tools/library/fix-unsynced-lrc.sh)
 
 Renames `.lrc` files that contain no LRC timestamps (i.e. plain-text
 lyrics incorrectly saved with a `.lrc` extension by tools like `mxlrc-go`)
@@ -91,10 +96,10 @@ to `.txt`. A synced LRC file has at least one `[mm:ss.xx]` timestamp line;
 anything without that is treated as unsynced and renamed.
 
 ```bash
-./scripts/fix-unsynced-lrc.sh --dry-run --dir /mnt/user/Music
+./tools/library/fix-unsynced-lrc.sh --dry-run --dir /mnt/user/Music
 ```
 
-### [scripts/findage.sh](scripts/findage.sh)
+### [tools/library/findage.sh](tools/library/findage.sh)
 
 Quick stats script — walks a directory of CBZ/CBR comic archives,
 reads each `ComicInfo.xml`, and reports how many have a usable `AgeRating`
@@ -109,7 +114,7 @@ work or as input to the planned age-rating backfill tool (see
 Spec for a future Python CLI that backfills the `AgeRating` field in
 `ComicInfo.xml` inside CBZ archives via tiered lookup (Amazon scraping
 through FlareSolverr → publisher/imprint heuristic). Not yet implemented;
-[findage.sh](scripts/findage.sh) is the matching coverage-check tool.
+[findage.sh](tools/library/findage.sh) is the matching coverage-check tool.
 
 ## Security
 

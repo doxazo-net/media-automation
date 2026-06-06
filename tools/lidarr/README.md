@@ -6,7 +6,7 @@
 brew install imagemagick ffmpeg rsgain git
 python3 -m pip install mutagen essentia opencv-python-headless
 # optional convenience command:
-ln -sf "$PWD/tools/ImportLidarrManual.py" /usr/local/bin/il   # or /opt/homebrew/bin
+ln -sf "$PWD/tools/lidarr/ImportLidarrManual.py" /usr/local/bin/il   # or /opt/homebrew/bin
 ```
 
 `brew` installs persist; nothing further needed.
@@ -27,7 +27,7 @@ checkout on the array and let the boot script re-establish the rest.
 
    ```bash
    git clone <repo-url> /mnt/vms/dockerappdata/media-automation
-   chmod +x /mnt/vms/dockerappdata/media-automation/tools/ImportLidarrManual.py
+   chmod +x /mnt/vms/dockerappdata/media-automation/tools/lidarr/ImportLidarrManual.py
    ```
 
 3. Run it once; the dependency preflight detects missing tools, offers to
@@ -35,7 +35,7 @@ checkout on the array and let the boot script re-establish the rest.
    that reinstalls them and recreates the `il` symlink on every boot:
 
    ```bash
-   python3 /mnt/vms/dockerappdata/media-automation/tools/ImportLidarrManual.py /path/to/music
+   python3 /mnt/vms/dockerappdata/media-automation/tools/lidarr/ImportLidarrManual.py /path/to/music
    ```
 
    - If the User Scripts plugin is installed, it writes
