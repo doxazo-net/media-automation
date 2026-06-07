@@ -371,7 +371,16 @@ mod tests {
     use proptest::prelude::*;
 
     fn arb_words() -> impl Strategy<Value = Vec<String>> {
-        prop::collection::vec("[a-zA-Z']{0,8}", 0..6)
+        // Min length 1: real config word lists never contain empty strings, and an
+        // empty stem makes word.contains("") trivially true for every token.
+        prop::collection::vec("[a-zA-Z']{1,8}", 0..6)
+    }
+
+    // Words drawn from the full printable-ASCII range so they include regex
+    // metacharacters ( ) [ ] \ . * + ? etc., to genuinely stress regex::escape
+    // in compile_exact_patterns (whose Regex::new(...).unwrap() relies on it).
+    fn arb_pattern_words() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec("[\\x20-\\x7e]{1,8}", 0..6)
     }
 
     prop_compose! {
@@ -426,11 +435,12 @@ mod tests {
             }
         }
 
-        // Exact hits are always one of the configured pattern words; adversarial
-        // regex metacharacters must not break compilation (regex::escape) or panic.
+        // Exact hits are always one of the configured pattern words; pattern words
+        // carrying regex metacharacters must not break compilation (regex::escape)
+        // or panic. Uses the metacharacter-bearing generator to make that real.
         #[test]
         fn detect_exact_returns_only_pattern_words(
-            words in arb_words(), text in ".*",
+            words in arb_pattern_words(), text in ".*",
         ) {
             let patterns = compile_exact_patterns(&words);
             for hit in detect_exact(&text, &patterns) {
@@ -445,6 +455,41 @@ mod tests {
             let engine = DetectionEngine::new(&cfg);
             if let Some(g) = engine.match_g_genre(&genres) {
                 prop_assert!(genres.iter().any(|x| x.as_str() == g));
+            }
+        }
+
+        // Positive direction: a genre present in the allow-list (in any case) is
+        // always found - exercises the case-insensitive match, not just the miss.
+        #[test]
+        fn match_g_genre_matches_case_insensitively(
+            cfg in arb_detection_config()
+                .prop_filter("needs a non-empty allow-list", |c| !c.g_genres.is_empty()),
+            extra in arb_words(),
+        ) {
+            let engine = DetectionEngine::new(&cfg);
+            let mut candidates = extra;
+            candidates.push(cfg.g_genres[0].to_uppercase());
+            prop_assert!(engine.match_g_genre(&candidates).is_some());
+        }
+
+        // Core business invariant: if the R lists alone classify as R, the full
+        // config must also classify as R (R is checked before PG-13, never after).
+        #[test]
+        fn r_tier_takes_priority_over_pg13(
+            cfg in arb_detection_config(), text in ".*",
+        ) {
+            let r_only = DetectionConfig {
+                r_stems: cfg.r_stems.clone(),
+                r_exact: cfg.r_exact.clone(),
+                pg13_stems: Vec::new(),
+                pg13_exact: Vec::new(),
+                false_positives: cfg.false_positives.clone(),
+                g_genres: cfg.g_genres.clone(),
+            };
+            let r_engine = DetectionEngine::new(&r_only);
+            if r_engine.classify_lyrics(&text).0 == Some("R") {
+                let full_engine = DetectionEngine::new(&cfg);
+                prop_assert_eq!(full_engine.classify_lyrics(&text).0, Some("R"));
             }
         }
     }
