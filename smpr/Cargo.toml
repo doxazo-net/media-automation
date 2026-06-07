@@ -36,4 +36,5 @@ lto = true
 opt-level = "z"  # optimize for size
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3.27.0"

@@ -95,4 +95,21 @@ mod tests {
     fn location_leaf_only_slashes_returns_original() {
         assert_eq!(super::location_leaf("///"), "///");
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // Never panics on arbitrary (incl. Unicode / nested-bracket) input.
+        #[test]
+        fn strip_lrc_never_panics(s in ".*") {
+            let _ = strip_lrc_tags(&s);
+        }
+
+        // Stripping is stable: a second pass over already-stripped text is a no-op.
+        #[test]
+        fn strip_lrc_is_idempotent(s in ".*") {
+            let once = strip_lrc_tags(&s);
+            prop_assert_eq!(strip_lrc_tags(&once), once);
+        }
+    }
 }

@@ -762,3 +762,11 @@ fn resolve_returns_none_when_no_config_found() {
     let resolved = super::resolve_default_config_path_from(dir.path());
     assert!(resolved.is_none());
 }
+
+proptest::proptest! {
+    // parse_toml must return Ok or Err on any input - never panic.
+    #[test]
+    fn parse_toml_never_panics(s in ".*") {
+        let _ = super::parse_toml(&s);
+    }
+}

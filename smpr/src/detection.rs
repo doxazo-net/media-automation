@@ -367,4 +367,130 @@ mod tests {
         // g_genres should be lowercased
         assert_eq!(engine.g_genres, vec!["classical", "ambient"]);
     }
+
+    use proptest::prelude::*;
+
+    fn arb_words() -> impl Strategy<Value = Vec<String>> {
+        // Min length 1: real config word lists never contain empty strings, and an
+        // empty stem makes word.contains("") trivially true for every token.
+        prop::collection::vec("[a-zA-Z']{1,8}", 0..6)
+    }
+
+    // Words drawn from the full printable-ASCII range so they include regex
+    // metacharacters ( ) [ ] \ . * + ? etc., to genuinely stress regex::escape
+    // in compile_exact_patterns (whose Regex::new(...).unwrap() relies on it).
+    fn arb_pattern_words() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec("[\\x20-\\x7e]{1,8}", 0..6)
+    }
+
+    prop_compose! {
+        fn arb_detection_config()(
+            r_stems in arb_words(), r_exact in arb_words(),
+            pg13_stems in arb_words(), pg13_exact in arb_words(),
+            false_positives in arb_words(), g_genres in arb_words(),
+        ) -> DetectionConfig {
+            DetectionConfig {
+                r_stems, r_exact, pg13_stems, pg13_exact, false_positives, g_genres,
+            }
+        }
+    }
+
+    proptest! {
+        // Never panics on arbitrary config + arbitrary (incl. Unicode) lyrics,
+        // and the returned tier is always one of the three valid values.
+        #[test]
+        fn classify_never_panics_and_tier_is_valid(
+            cfg in arb_detection_config(), text in ".*",
+        ) {
+            let engine = DetectionEngine::new(&cfg);
+            let (tier, _matched) = engine.classify_lyrics(&text);
+            prop_assert!(matches!(tier, None | Some("R") | Some("PG-13")));
+        }
+
+        #[test]
+        fn classify_is_deterministic(cfg in arb_detection_config(), text in ".*") {
+            let engine = DetectionEngine::new(&cfg);
+            prop_assert_eq!(
+                engine.classify_lyrics(&text), engine.classify_lyrics(&text));
+        }
+
+        #[test]
+        fn classify_blank_text_is_none(
+            cfg in arb_detection_config(), ws in "[ \\t\\r\\n]*",
+        ) {
+            let engine = DetectionEngine::new(&cfg);
+            let (tier, matched) = engine.classify_lyrics(&ws);
+            prop_assert!(tier.is_none());
+            prop_assert!(matched.is_empty());
+        }
+
+        // Stem hits are always drawn from the input tokens.
+        #[test]
+        fn detect_stems_returns_only_input_tokens(
+            tokens in arb_words(), stems in arb_words(), fps in arb_words(),
+        ) {
+            let refs: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
+            for hit in detect_stems(&refs, &stems, &fps) {
+                prop_assert!(tokens.contains(&hit));
+            }
+        }
+
+        // Exact hits are always one of the configured pattern words; pattern words
+        // carrying regex metacharacters must not break compilation (regex::escape)
+        // or panic. Uses the metacharacter-bearing generator to make that real.
+        #[test]
+        fn detect_exact_returns_only_pattern_words(
+            words in arb_pattern_words(), text in ".*",
+        ) {
+            let patterns = compile_exact_patterns(&words);
+            for hit in detect_exact(&text, &patterns) {
+                prop_assert!(words.contains(&hit));
+            }
+        }
+
+        #[test]
+        fn match_g_genre_returns_an_input_genre(
+            cfg in arb_detection_config(), genres in arb_words(),
+        ) {
+            let engine = DetectionEngine::new(&cfg);
+            if let Some(g) = engine.match_g_genre(&genres) {
+                prop_assert!(genres.iter().any(|x| x.as_str() == g));
+            }
+        }
+
+        // Positive direction: a genre present in the allow-list (in any case) is
+        // always found - exercises the case-insensitive match, not just the miss.
+        #[test]
+        fn match_g_genre_matches_case_insensitively(
+            cfg in arb_detection_config()
+                .prop_filter("needs a non-empty allow-list", |c| !c.g_genres.is_empty()),
+            extra in arb_words(),
+        ) {
+            let engine = DetectionEngine::new(&cfg);
+            let mut candidates = extra;
+            candidates.push(cfg.g_genres[0].to_uppercase());
+            prop_assert!(engine.match_g_genre(&candidates).is_some());
+        }
+
+        // Core business invariant: if the R lists alone classify as R, the full
+        // config must also classify as R (R is checked before PG-13, never after).
+        #[test]
+        fn r_tier_takes_priority_over_pg13(
+            cfg in arb_detection_config(), text in ".*",
+        ) {
+            let r_only = DetectionConfig {
+                r_stems: cfg.r_stems.clone(),
+                r_exact: cfg.r_exact.clone(),
+                pg13_stems: Vec::new(),
+                pg13_exact: Vec::new(),
+                false_positives: cfg.false_positives.clone(),
+                g_genres: cfg.g_genres.clone(),
+            };
+            let r_engine = DetectionEngine::new(&r_only);
+            if r_engine.classify_lyrics(&text).0 == Some("R") {
+                let full_engine = DetectionEngine::new(&cfg);
+                prop_assert_eq!(full_engine.classify_lyrics(&text).0, Some("R"));
+            }
+        }
+    }
 }
