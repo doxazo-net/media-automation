@@ -61,7 +61,7 @@ cargo test --verbose -- --test-threads=1
 cargo build --release
 ```
 
-Always run `cargo fmt` before committing. Pre-commit hooks do not run in subagent contexts, so format manually.
+Always run `cargo fmt` and `cargo clippy -- -D warnings` before committing - pre-commit hooks do not run in subagent contexts, so run them manually.
 
 ## Architecture
 
@@ -222,4 +222,4 @@ GitHub Actions workflows in `.github/workflows/`:
   - **Build**: cross-compile matrix — Linux (musl static), macOS Intel, macOS Apple Silicon, Windows
   - **Release**: downloads all artifacts, creates GitHub Release with auto-generated notes
 
-Pre-commit hooks: `cargo fmt -- --check` and `cargo clippy -- -D warnings`. Note: subagent commits bypass pre-commit hooks, so always run `cargo fmt` and `cargo clippy` manually before committing.
+Pre-commit hooks: `cargo fmt -- --check` and `cargo clippy -- -D warnings` (the subagent-bypass caveat is noted under Commands - run them manually).
