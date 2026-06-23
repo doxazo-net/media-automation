@@ -140,10 +140,14 @@ mod tests {
 
     #[test]
     fn poller_floors_zero_interval() {
-        let client = Client::new(&crate::api::AbsConfig {
-            server: "http://127.0.0.1:0".to_string(),
-            access_token: "t".to_string(),
-            default_library: None,
+        let client = Client::new(&crate::config::Credentials {
+            config: crate::config::StoredConfig {
+                server: "http://127.0.0.1:0".to_string(),
+                access_token: "t".to_string(),
+                refresh_token: None,
+                default_library: None,
+            },
+            source_path: std::path::PathBuf::from("/dev/null"),
         });
         let poller = TaskPoller::new(&client, Duration::from_secs(5), Duration::ZERO);
         assert_eq!(poller.interval, Duration::from_secs(1));

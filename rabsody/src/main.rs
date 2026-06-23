@@ -6,12 +6,14 @@
 //! live library.
 
 mod api;
+mod auth;
+mod config;
 mod error;
 mod items;
 mod metadata;
 mod tasks;
 
-use api::{AbsConfig, Client};
+use auth::ConfigCmd;
 use clap::{Parser, Subcommand};
 use error::{Error, Result};
 use items::ItemsCmd;
@@ -32,6 +34,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Authenticate to the ABS server and store a native config.
+    Login {
+        /// ABS server URL (defaults to the server already in config).
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        username: String,
+        /// Password (prompted securely if omitted).
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Manage the native RABSody config (get / set server, library, token).
+    #[command(subcommand)]
+    Config(ConfigCmd),
     /// Verify connectivity and credentials against the ABS server.
     Doctor,
     /// Read-only reporting over the library.
@@ -87,6 +103,12 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Login {
+            server,
+            username,
+            password,
+        } => auth::login(server, username, password),
+        Command::Config(cmd) => auth::config(cmd),
         Command::Doctor => doctor(),
         Command::Report(ReportCmd::Stats) => report_stats(),
         Command::Items(cmd) => items::run(cmd),
@@ -120,13 +142,15 @@ pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 }
 
 fn doctor() -> Result<()> {
-    let cfg = AbsConfig::load()?;
+    let creds = config::Credentials::load()?;
+    let cfg = &creds.config;
     println!("server:        {}", cfg.server);
+    println!("config source: {}", creds.source_path.display());
     println!(
         "default lib:   {}",
         cfg.default_library.as_deref().unwrap_or("(none)")
     );
-    let client = Client::new(&cfg);
+    let client = api::Client::new(&creds);
     let me = client.me()?;
     let user = me.get("username").and_then(|v| v.as_str()).unwrap_or("?");
     let kind = me.get("type").and_then(|v| v.as_str()).unwrap_or("?");

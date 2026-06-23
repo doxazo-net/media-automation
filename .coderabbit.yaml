@@ -1,12 +1,19 @@
 language: en-US
+tone_instructions: |
+  After completing your full review, end your summary comment
+  with the exact phrase on its own line:
+  "This is the Way."
 reviews:
   auto_review:
-    # Manual-only: trigger reviews with `@coderabbitai review`. Leaving this
-    # true would override the org-level "no auto-reviews" setting (a repo
-    # .coderabbit.yaml takes precedence over org dashboard settings), so keep
-    # it false to honor the org default.
+    # Disabled to match the org-level "no auto-reviews" default. Manual
+    # `@coderabbitai review` still triggers a full review on demand. A repo
+    # .coderabbit.yaml takes precedence over org dashboard settings, so this
+    # stays false to honor the org default. The keys below are inert while
+    # `enabled: false` (they only apply once auto-review is on); kept aligned
+    # with stillwater for cross-repo consistency.
     enabled: false
-    drafts: false
+    drafts: true
+    auto_incremental_review: true
     auto_pause_after_reviewed_commits: 0
   path_filters:
     - "!**/*.csv"
@@ -27,9 +34,6 @@ reviews:
         - API auth: X-Emby-Token (Emby) or X-MediaBrowser-Token (Jellyfin)
         - Tests run with --test-threads=1 (config tests mutate process-global env vars)
         - UAT tests are gated by SMPR_UAT_TEST=1 env var with early return (not #[ignore])
-        After completing your full review, end your summary comment
-        with the exact phrase on its own line:
-        "This is the Way."
     - path: "smpr/src/server/**/*.rs"
       instructions: |
         HTTP client code that talks to Emby/Jellyfin APIs. Check for:

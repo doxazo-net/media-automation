@@ -10,13 +10,17 @@ field hygiene, age/AR enrichment).
 
 ## Status: reads-first
 
-The tool is being built **reads-first** - every implemented command is read-only,
-so there is currently zero risk to a live library. Write commands (metadata edits,
-chapter writes, embed/encode) land only after the shared write harness (dry-run +
-backup + ledger) and per-command safety gates exist.
+The tool is being built **reads-first** - no implemented command mutates the ABS
+library, so there is currently zero risk to a live library. (`login` and
+`config set` write only the local credential file.) Library-write commands
+(metadata edits, chapter writes, embed/encode) land only after the shared write
+harness (dry-run + backup + ledger) and per-command safety gates exist.
 
-Implemented today (all read-only):
+Implemented today:
 
+- `rabs login` - authenticate against the ABS server (`POST /login`) and write a
+  native config; expired access tokens transparently refresh (`POST /auth/refresh`).
+- `rabs config get|set` - inspect/edit the native config (server, library, token).
 - `rabs doctor` - verify connectivity + credentials against the ABS server.
 - `rabs report stats` - library summary (item count, ASIN/ISBN coverage, abridged
   count, distinct genres/tags/narrators, top genres/tags).
@@ -32,13 +36,20 @@ See the **"RABSody: abs-cli parity"** milestone / the parity epic for the roadma
 
 ## Configuration
 
-For now RABSody reuses `abs-cli`'s credentials at `~/.abs-cli/config.json`
-(`server`, `accessToken`, `defaultLibrary`), so no separate login is required for
-reads. A native `rabs login` + token refresh is on the roadmap.
+`rabs login` writes a native TOML config at `<config-dir>/rabsody/config.toml`
+(e.g. `~/.config/rabsody/config.toml`) holding `server`, `accessToken`,
+`refreshToken`, and `defaultLibrary`. An expired access token is refreshed
+transparently on the next request and the rotated tokens are persisted.
+
+Until a native config exists, RABSody falls back to `abs-cli`'s
+`~/.abs-cli/config.json` (same keys), so existing setups keep working; a refresh
+persists back to whichever file supplied the credentials.
 
 ## Build & run
 
 ```sh
+cargo run -- login --server https://abs.example.com --username alice
+cargo run -- config get
 cargo run -- doctor
 cargo run -- report stats
 cargo run -- items list --limit 20 --sort media.metadata.title

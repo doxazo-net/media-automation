@@ -1,7 +1,9 @@
-//! Audiobookshelf HTTP API client (reads-first) + config + serde models.
+//! Audiobookshelf HTTP API client (reads-first) + serde models.
 //!
-//! Credentials are reused from abs-cli's own config at `~/.abs-cli/config.json`
-//! (server + accessToken), so RABSody needs no separate login flow for reads.
+//! Credentials resolve via [`crate::config`] (native config preferred, abs-cli
+//! fallback). The client transparently refreshes an expired access token on a
+//! 401/403 using the stored refresh token (`POST /auth/refresh`), persisting the
+//! rotated tokens.
 //!
 //! This module is the API surface and is intentionally built ahead of its
 //! consumers during the reads-first migration: models mirror the full ABS
@@ -9,12 +11,15 @@
 //! them. Dead-code is allowed here (real dead-code is still caught in `main`).
 #![allow(dead_code)]
 
+use std::cell::RefCell;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::config::{self, Credentials, StoredConfig};
 use crate::error::{Error, Result};
 
 /// Percent-encode set for a single URL path segment: encode everything that is
@@ -32,29 +37,22 @@ fn encode_segment(value: &str) -> String {
     utf8_percent_encode(value, PATH_SEGMENT).to_string()
 }
 
-/// abs-cli's on-disk config (`~/.abs-cli/config.json`).
+/// ABS auth response (`POST /login` and `POST /auth/refresh` share this shape).
 #[derive(Debug, Deserialize)]
-pub struct AbsConfig {
-    pub server: String,
-    #[serde(rename = "accessToken")]
-    pub access_token: String,
-    #[serde(rename = "defaultLibrary")]
-    pub default_library: Option<String>,
+#[serde(rename_all = "camelCase")]
+struct AuthResponse {
+    user: AuthUser,
+    #[serde(default)]
+    user_default_library_id: Option<String>,
 }
 
-impl AbsConfig {
-    /// Load from `~/.abs-cli/config.json`.
-    pub fn load() -> Result<Self> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::Config("could not resolve home directory".to_string()))?;
-        let path = home.join(".abs-cli").join("config.json");
-        let raw = std::fs::read_to_string(&path).map_err(|e| {
-            Error::Config(format!("reading abs-cli config at {}: {e}", path.display()))
-        })?;
-        let cfg: AbsConfig = serde_json::from_str(&raw)
-            .map_err(|e| Error::Config(format!("parsing abs-cli config.json: {e}")))?;
-        Ok(cfg)
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthUser {
+    #[serde(default)]
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 /// A page of library items.
@@ -302,51 +300,130 @@ pub struct TasksResponse {
 pub struct Client {
     agent: ureq::Agent,
     server: String,
-    token: String,
+    // Interior mutability so a transparent refresh can rotate the tokens behind
+    // `&self`. Single-threaded CLI, so `RefCell` is sufficient.
+    access_token: RefCell<String>,
+    refresh_token: RefCell<Option<String>>,
+    // File the credentials came from; rotated tokens persist back here.
+    source_path: PathBuf,
+}
+
+/// The shared agent config: explicit timeouts (never hang the CLI/CI) and HTTP
+/// status surfaced on the `Ok` path so callers can map 401/403 to a distinct
+/// auth error.
+fn build_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
 }
 
 impl Client {
-    pub fn new(cfg: &AbsConfig) -> Self {
-        // Explicit timeouts so a slow or half-open server can never hang the
-        // CLI (or a CI job) indefinitely: bounded TCP/TLS connect plus an
-        // end-to-end ceiling covering the whole call including body read.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            // Surface HTTP status codes on the `Ok` path so `get_json` can map
-            // 401/403 to a distinct auth error instead of a generic transport one.
-            .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .into();
+    pub fn new(creds: &Credentials) -> Self {
         Self {
-            agent,
-            server: cfg.server.trim_end_matches('/').to_string(),
-            token: cfg.access_token.clone(),
+            agent: build_agent(),
+            server: creds.config.server.trim_end_matches('/').to_string(),
+            access_token: RefCell::new(creds.config.access_token.clone()),
+            refresh_token: RefCell::new(creds.config.refresh_token.clone()),
+            source_path: creds.source_path.clone(),
         }
     }
 
     fn get_json<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
         let url = format!("{}{}", self.server, path);
-        let mut req = self
-            .agent
-            .get(&url)
-            .header("Authorization", &format!("Bearer {}", self.token));
-        for (k, v) in query {
-            req = req.query(*k, *v);
+        let resp = self.send_get(&url, query)?;
+        if status_is_auth(&resp) && self.try_refresh()? {
+            return read_ok(self.send_get(&url, query)?, &url);
         }
-        let resp = req.call()?;
         read_ok(resp, &url)
     }
 
     /// Authenticated POST with a JSON body, decoding a JSON response.
     fn post_json<B: Serialize, R: DeserializeOwned>(&self, path: &str, body: &B) -> Result<R> {
         let url = format!("{}{}", self.server, path);
-        let resp = self
+        let resp = self.send_post(&url, body)?;
+        if status_is_auth(&resp) && self.try_refresh()? {
+            return read_ok(self.send_post(&url, body)?, &url);
+        }
+        read_ok(resp, &url)
+    }
+
+    fn send_get(
+        &self,
+        url: &str,
+        query: &[(&str, &str)],
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let token = self.access_token.borrow().clone();
+        let mut req = self
+            .agent
+            .get(url)
+            .header("Authorization", &format!("Bearer {token}"));
+        for (k, v) in query {
+            req = req.query(*k, *v);
+        }
+        Ok(req.call()?)
+    }
+
+    fn send_post<B: Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let token = self.access_token.borrow().clone();
+        Ok(self
+            .agent
+            .post(url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .send_json(body)?)
+    }
+
+    /// On a 401/403, exchange the stored refresh token for a fresh access token
+    /// (`POST /auth/refresh` with the `x-refresh-token` header), rotate + persist
+    /// the tokens, and report whether a retry is worthwhile.
+    ///
+    /// A missing refresh token or a failed/empty refresh exchange returns
+    /// `Ok(false)` so the original auth error surfaces. But a *persistence*
+    /// failure returns `Err`: ABS rotates the refresh token, so a refresh that
+    /// succeeds in memory yet never reaches disk would leave a stale (now
+    /// invalid) refresh token for the next run. Persist before updating the
+    /// in-memory tokens so we never report success on tokens we couldn't store.
+    fn try_refresh(&self) -> Result<bool> {
+        let refresh = match self.refresh_token.borrow().clone() {
+            Some(token) => token,
+            None => return Ok(false),
+        };
+        let url = format!("{}/auth/refresh", self.server);
+        let resp = match self
             .agent
             .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .send_json(body)?;
-        read_ok(resp, &url)
+            .header("x-refresh-token", &refresh)
+            .send_empty()
+        {
+            Ok(resp) => resp,
+            Err(_) => return Ok(false),
+        };
+        let auth: AuthResponse = match read_ok(resp, &url) {
+            Ok(auth) => auth,
+            Err(_) => return Ok(false),
+        };
+        if auth.user.access_token.is_empty() {
+            return Ok(false);
+        }
+        // Persist the rotated tokens so the next run (and abs-cli) stay valid;
+        // fail loudly if that write fails rather than continuing on tokens that
+        // exist only in memory.
+        config::persist_tokens(
+            &self.source_path,
+            &auth.user.access_token,
+            auth.user.refresh_token.as_deref(),
+        )?;
+        *self.access_token.borrow_mut() = auth.user.access_token.clone();
+        if auth.user.refresh_token.is_some() {
+            *self.refresh_token.borrow_mut() = auth.user.refresh_token.clone();
+        }
+        Ok(true)
     }
 
     /// `GET /api/me` - identity / auth check.
@@ -465,26 +542,59 @@ impl Client {
     }
 }
 
-/// Load the abs-cli config and return a [`Client`] (no library requirement).
-pub fn client_only() -> Result<Client> {
-    let cfg = AbsConfig::load()?;
-    Ok(Client::new(&cfg))
+/// `POST /login` with username/password; returns the resulting [`Credentials`]
+/// (targeting the native config path, so `rabs login` writes a native TOML).
+pub fn login(server: &str, username: &str, password: &str) -> Result<Credentials> {
+    let server = server.trim_end_matches('/').to_string();
+    let url = format!("{server}/login");
+    let resp = build_agent()
+        .post(&url)
+        .send_json(serde_json::json!({ "username": username, "password": password }))?;
+    let auth: AuthResponse = read_ok(resp, &url)?;
+    if auth.user.access_token.is_empty() {
+        return Err(Error::Parse(
+            "login response contained no access token".to_string(),
+        ));
+    }
+    Ok(Credentials {
+        config: StoredConfig {
+            server,
+            access_token: auth.user.access_token,
+            refresh_token: auth.user.refresh_token,
+            default_library: auth.user_default_library_id,
+        },
+        source_path: StoredConfig::native_path()?,
+    })
 }
 
-/// Load the config and return a [`Client`] plus the resolved default library.
+/// Resolve credentials (native config preferred, abs-cli fallback) into a
+/// [`Client`] with no library requirement.
+pub fn client_only() -> Result<Client> {
+    Ok(Client::new(&Credentials::load()?))
+}
+
+/// Resolve credentials and return a [`Client`] plus the default library.
 ///
-/// Treats an empty or whitespace-only `defaultLibrary` as missing config, so a
-/// blank value can never produce a malformed `/api/libraries//items` path.
+/// Treats an empty or whitespace-only `defaultLibrary` as missing, so a blank
+/// value can never produce a malformed `/api/libraries//items` path.
 pub fn connect() -> Result<(Client, String)> {
-    let cfg = AbsConfig::load()?;
-    let library = cfg
+    let creds = Credentials::load()?;
+    let library = creds
+        .config
         .default_library
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
-        .ok_or_else(|| Error::Config("no defaultLibrary set in abs-cli config".to_string()))?;
-    Ok((Client::new(&cfg), library))
+        .ok_or_else(|| {
+            Error::Config("no default library set; run `rabs config set library <id>`".to_string())
+        })?;
+    Ok((Client::new(&creds), library))
+}
+
+/// True when a response carries a 401/403 status.
+fn status_is_auth(resp: &ureq::http::Response<ureq::Body>) -> bool {
+    matches!(resp.status().as_u16(), 401 | 403)
 }
 
 /// Map a ureq response to a decoded value or the appropriate [`Error`]: 401/403
@@ -557,10 +667,14 @@ mod tests {
     }
 
     fn client_for(port: u16) -> Client {
-        Client::new(&AbsConfig {
-            server: format!("http://127.0.0.1:{port}"),
-            access_token: "test-token".to_string(),
-            default_library: None,
+        Client::new(&Credentials {
+            config: StoredConfig {
+                server: format!("http://127.0.0.1:{port}"),
+                access_token: "test-token".to_string(),
+                refresh_token: None,
+                default_library: None,
+            },
+            source_path: std::path::PathBuf::from("/dev/null"),
         })
     }
 
