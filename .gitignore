@@ -38,3 +38,6 @@ docs/superpowers/
 
 # Git worktrees
 .worktrees/
+
+# Transient session checkpoint (resume state; never committed)
+SESSION-STATE.md

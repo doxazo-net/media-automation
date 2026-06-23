@@ -1,0 +1,5 @@
+# Declares the unified pre-PR gate for cc-orchestrator's gate-runner.py so
+# /prep-pr and the pre-push hook run the same checks. Form A (umbrella script):
+# the script owns the check list, so this file stays a stable one-liner.
+[prep_pr]
+gate = "bash scripts/gate.sh"
