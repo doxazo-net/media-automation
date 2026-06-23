@@ -1,11 +1,4 @@
-mod config;
-mod detection;
-mod rating;
-mod report;
-mod server;
-mod tui;
-mod util;
-mod wizard;
+use smpr::{config, detection, rating, report, server, tui, wizard};
 
 use clap::{Args, Parser, Subcommand};
 use log::LevelFilter;

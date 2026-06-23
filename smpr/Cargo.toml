@@ -6,6 +6,10 @@ description = "Fetch lyrics from Emby/Jellyfin, detect explicit content, set par
 license = "MIT"
 rust-version = "1.94"
 
+[lib]
+name = "smpr"
+path = "src/lib.rs"
+
 [[bin]]
 name = "smpr"
 path = "src/main.rs"
