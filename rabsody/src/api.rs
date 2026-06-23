@@ -111,6 +111,103 @@ pub struct Metadata {
     pub subtitle: Option<String>,
 }
 
+/// Partial `media.metadata` for a write. Every field is `Option`; only `Some`
+/// fields serialize (`skip_serializing_if`), so ABS receives - and merges - just
+/// the fields the caller is changing. `genres` is an array ABS *replaces*
+/// wholesale, so callers that want union semantics must pass the merged vec.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narrator_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_year: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isbn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abridged: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explicit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genres: Option<Vec<String>>,
+}
+
+/// Body for `PATCH /api/items/{id}/media`: the metadata patch plus `tags` (also
+/// an array ABS replaces wholesale - pass the merged vec for union semantics).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct MediaPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+impl MediaPatch {
+    /// True when nothing would be sent (no metadata fields and no tags).
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_none()
+            && self
+                .metadata
+                .as_ref()
+                .map(|m| {
+                    serde_json::to_value(m)
+                        .map(|v| v == serde_json::json!({}))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+    }
+}
+
+/// One entry in a `POST /api/items/batch/update` array.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemUpdate {
+    pub id: String,
+    #[serde(rename = "mediaPayload")]
+    pub media_payload: MediaPatch,
+}
+
+/// Wrapper for `POST /api/items/batch/get` (`{ "libraryItems": [...] }`).
+#[derive(Debug, Default, Deserialize)]
+struct BatchGetResponse {
+    #[serde(rename = "libraryItems", default)]
+    library_items: Vec<Item>,
+}
+
+/// `{"success":bool,"updates":N}` from the batch-update endpoint.
+#[derive(Debug, Default, Deserialize)]
+pub struct BatchUpdateResult {
+    #[serde(default)]
+    pub success: bool,
+    #[serde(default)]
+    pub updates: u32,
+}
+
+/// One entry in a `PATCH /api/me/progress/batch/update` array. Extra progress
+/// fields (`currentTime`, `progress`, ...) ride along via `flatten`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProgressUpdate {
+    #[serde(rename = "libraryItemId")]
+    pub library_item_id: String,
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
 /// One audio file (or processed track) in an expanded item's media.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -502,10 +599,12 @@ impl Client {
 
     /// `POST /api/items/batch/get` - fetch multiple items by ID in one request.
     ///
-    /// NOTE: response shape (`Vec<Item>`) not yet verified against a live server.
+    /// `POST /api/items/batch/get` - fetch many items by ID. ABS wraps the
+    /// result in `{ "libraryItems": [...] }` (verified against ABS 2.35.1).
     pub fn items_batch_get(&self, item_ids: &[&str]) -> Result<Vec<Item>> {
         let body = serde_json::json!({ "libraryItemIds": item_ids });
-        self.post_json("/api/items/batch/get", &body)
+        let resp: BatchGetResponse = self.post_json("/api/items/batch/get", &body)?;
+        Ok(resp.library_items)
     }
 
     /// `GET /api/libraries/{library}/search?q=` - in-library search.
@@ -539,6 +638,67 @@ impl Client {
             "/api/search/covers",
             &[("title", title), ("author", author), ("provider", provider)],
         )
+    }
+
+    fn send_patch<B: Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let token = self.access_token.borrow().clone();
+        Ok(self
+            .agent
+            .patch(url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .send_json(body)?)
+    }
+
+    /// Authenticated PATCH with a JSON body, decoding a JSON response. Mirrors
+    /// [`Self::post_json`], including the transparent token-refresh retry.
+    fn patch_json<B: Serialize, R: DeserializeOwned>(&self, path: &str, body: &B) -> Result<R> {
+        let url = format!("{}{}", self.server, path);
+        let resp = self.send_patch(&url, body)?;
+        if status_is_auth(&resp) && self.try_refresh()? {
+            return read_ok(self.send_patch(&url, body)?, &url);
+        }
+        read_ok(resp, &url)
+    }
+
+    /// The server base URL this client targets (used to label backups/ledger).
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// `PATCH /api/items/{id}/media` - partial update of an item's media
+    /// metadata + tags. ABS merges scalar `metadata` fields server-side but
+    /// *replaces* array fields (`tags`, `genres`), so callers must pre-merge
+    /// arrays (see `items::merge_arrays`).
+    pub fn item_update_media(&self, item_id: &str, patch: &MediaPatch) -> Result<()> {
+        let path = format!("/api/items/{}/media", encode_segment(item_id));
+        let _: serde_json::Value = self.patch_json(&path, patch)?;
+        Ok(())
+    }
+
+    /// `POST /api/items/batch/update` - atomic batch metadata update.
+    pub fn items_batch_update(&self, updates: &[BatchItemUpdate]) -> Result<BatchUpdateResult> {
+        self.post_json("/api/items/batch/update", &updates)
+    }
+
+    /// PATCH that only checks status (no JSON decode) - for endpoints that reply
+    /// with a non-JSON body like the plain `OK` ABS returns for some writes.
+    fn patch_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
+        let url = format!("{}{}", self.server, path);
+        let resp = self.send_patch(&url, body)?;
+        if status_is_auth(&resp) && self.try_refresh()? {
+            return check_ok(self.send_patch(&url, body)?, &url);
+        }
+        check_ok(resp, &url)
+    }
+
+    /// `PATCH /api/me/progress/batch/update` - batch listening-progress update.
+    /// ABS replies with a plain `OK` body, so this checks status only.
+    pub fn batch_update_progress(&self, updates: &[ProgressUpdate]) -> Result<()> {
+        self.patch_ok("/api/me/progress/batch/update", &updates)
     }
 }
 
@@ -629,6 +789,32 @@ fn read_ok<R: DeserializeOwned>(
     resp.body_mut()
         .read_json::<R>()
         .map_err(|e| Error::Parse(format!("decoding response from {url}: {e}")))
+}
+
+/// Like [`read_ok`] but only validates the HTTP status (no body decode), for
+/// write endpoints whose success body is not JSON (ABS returns a plain `OK`).
+fn check_ok(mut resp: ureq::http::Response<ureq::Body>, url: &str) -> Result<()> {
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err(Error::Auth { status });
+    }
+    if !resp.status().is_success() {
+        let body = resp
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_to_string()
+            .map_err(|e| {
+                Error::Connection(format!(
+                    "reading HTTP {status} response body from {url}: {e}"
+                ))
+            })?;
+        return Err(Error::Http {
+            status,
+            body: truncate(&body),
+        });
+    }
+    Ok(())
 }
 
 /// Truncate an HTTP error body to a bounded snippet for error messages, on a
