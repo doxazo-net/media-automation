@@ -65,8 +65,11 @@ pub fn run(cmd: ItemsCmd) -> Result<()> {
             minified,
             include,
         } => {
-            let (client, default_lib) = api::connect()?;
-            let lib = library.unwrap_or(default_lib);
+            // Only require defaultLibrary when no explicit library is given.
+            let (client, lib) = match library {
+                Some(lib) => (api::client_only()?, lib),
+                None => api::connect()?,
+            };
             let params = ItemsListParams {
                 limit,
                 page,

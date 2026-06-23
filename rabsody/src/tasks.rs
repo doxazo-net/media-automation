@@ -80,6 +80,13 @@ pub struct TaskPoller<'a> {
 
 impl<'a> TaskPoller<'a> {
     pub fn new(client: &'a Client, timeout: Duration, interval: Duration) -> Self {
+        // Floor a zero interval so `--poll 0` can't spin a tight loop that
+        // hammers /api/tasks.
+        let interval = if interval.is_zero() {
+            Duration::from_secs(1)
+        } else {
+            interval
+        };
         Self {
             client,
             timeout,
@@ -129,5 +136,16 @@ mod tests {
         assert!(tasks_drained(&[]));
         assert!(tasks_drained(&[task(true), task(true)]));
         assert!(!tasks_drained(&[task(true), task(false)]));
+    }
+
+    #[test]
+    fn poller_floors_zero_interval() {
+        let client = Client::new(&crate::api::AbsConfig {
+            server: "http://127.0.0.1:0".to_string(),
+            access_token: "t".to_string(),
+            default_library: None,
+        });
+        let poller = TaskPoller::new(&client, Duration::from_secs(5), Duration::ZERO);
+        assert_eq!(poller.interval, Duration::from_secs(1));
     }
 }

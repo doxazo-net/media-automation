@@ -686,6 +686,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "log",
+ "percent-encoding",
  "regex",
  "serde",
  "serde_json",

@@ -11,10 +11,26 @@
 
 use std::time::Duration;
 
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+/// Percent-encode set for a single URL path segment: encode everything that is
+/// not an RFC 3986 "unreserved" character (ALPHA / DIGIT / `-` `.` `_` `~`), so
+/// a CLI-provided ID containing `/`, `?`, `#`, `%`, etc. can never alter the
+/// request path.
+const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Percent-encode a value for safe interpolation into a URL path segment.
+fn encode_segment(value: &str) -> String {
+    utf8_percent_encode(value, PATH_SEGMENT).to_string()
+}
 
 /// abs-cli's on-disk config (`~/.abs-cli/config.json`).
 #[derive(Debug, Deserialize)]
@@ -340,10 +356,7 @@ impl Client {
 
     /// One page of items for a library.
     pub fn items_page(&self, library: &str, page: u32, limit: u32) -> Result<ItemsPage> {
-        // ABS library IDs are server-generated UUIDs read from trusted local
-        // config (abs-cli's `defaultLibrary`), never CLI/user input, so they
-        // contain no URL-reserved characters and need no percent-encoding here.
-        let path = format!("/api/libraries/{library}/items");
+        let path = format!("/api/libraries/{}/items", encode_segment(library));
         self.get_json(
             &path,
             &[("limit", &limit.to_string()), ("page", &page.to_string())],
@@ -367,17 +380,24 @@ impl Client {
         Ok(out)
     }
 
-    /// `GET /api/search/books` - provider metadata search.
+    /// `GET /api/search/books` - provider metadata search by title/author/asin.
+    ///
+    /// `provider` is always sent; the others only when non-empty. NOTE: ABS
+    /// support for the `asin` query param is unverified against a live server.
     pub fn search_books(
         &self,
         title: &str,
         author: &str,
+        asin: &str,
         provider: &str,
     ) -> Result<Vec<SearchResult>> {
-        self.get_json(
-            "/api/search/books",
-            &[("title", title), ("author", author), ("provider", provider)],
-        )
+        let mut query: Vec<(&str, &str)> = vec![("provider", provider)];
+        for (k, v) in [("title", title), ("author", author), ("asin", asin)] {
+            if !v.is_empty() {
+                query.push((k, v));
+            }
+        }
+        self.get_json("/api/search/books", &query)
     }
 
     /// `GET /api/libraries/{library}/items` with filter/sort/pagination, keeping
@@ -385,8 +405,7 @@ impl Client {
     pub fn items_list(&self, library: &str, params: &ItemsListParams) -> Result<ItemsListResponse> {
         let owned = params.to_query_pairs();
         let query: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        // Library IDs are trusted server-generated UUIDs from config; see items_page.
-        let path = format!("/api/libraries/{library}/items");
+        let path = format!("/api/libraries/{}/items", encode_segment(library));
         self.get_json(&path, &query)
     }
 
@@ -400,9 +419,7 @@ impl Client {
             owned.push(("include", include.to_string()));
         }
         let query: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        // item_id comes from the CLI; ABS item IDs are UUIDs, so a malformed value
-        // simply 404s rather than escaping the path.
-        let path = format!("/api/items/{item_id}");
+        let path = format!("/api/items/{}", encode_segment(item_id));
         self.get_json(&path, &query)
     }
 
@@ -416,8 +433,7 @@ impl Client {
 
     /// `GET /api/libraries/{library}/search?q=` - in-library search.
     pub fn search_library(&self, library: &str, query: &str) -> Result<LibrarySearchResponse> {
-        // Library IDs are trusted server-generated UUIDs from config; see items_page.
-        let path = format!("/api/libraries/{library}/search");
+        let path = format!("/api/libraries/{}/search", encode_segment(library));
         self.get_json(&path, &[("q", query)])
     }
 
@@ -616,6 +632,15 @@ mod tests {
                 ("include", "rssfeed".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn encode_segment_escapes_reserved_path_chars() {
+        // UUID-like values (unreserved chars only) pass through untouched.
+        assert_eq!(encode_segment("li_abc-123.def_ghi"), "li_abc-123.def_ghi");
+        // Path-reserved / dangerous characters are percent-encoded.
+        assert_eq!(encode_segment("../x"), "..%2Fx");
+        assert_eq!(encode_segment("a?b#c%d"), "a%3Fb%23c%25d");
     }
 
     #[test]

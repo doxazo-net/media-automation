@@ -18,6 +18,8 @@ pub enum MetadataCmd {
         title: Option<String>,
         #[arg(long)]
         author: Option<String>,
+        #[arg(long)]
+        asin: Option<String>,
     },
     /// List available metadata providers (`GET /api/search/providers`).
     Providers,
@@ -41,10 +43,12 @@ pub fn run(cmd: MetadataCmd) -> Result<()> {
             provider,
             title,
             author,
+            asin,
         } => {
             let results = client.search_books(
                 title.as_deref().unwrap_or(""),
                 author.as_deref().unwrap_or(""),
+                asin.as_deref().unwrap_or(""),
                 &provider,
             )?;
             crate::print_json(&results)
