@@ -151,3 +151,49 @@ smpr rate --server home-emby --library Music
 
 False positives are handled by a configurable ignore list (e.g., "cocktail",
 "hancock", "documentary" won't trigger on "cock" or "cum" stems).
+
+## Development
+
+### Tests
+
+```bash
+cd smpr
+cargo test -- --test-threads=1   # config tests mutate process-global env vars
+```
+
+### Fuzzing
+
+The pure parsers are exercised by [`cargo-fuzz`](https://rust-fuzz.github.io/book/)
+(libFuzzer) targets under [`fuzz/`](fuzz/). Coverage-guided fuzzing surfaces
+panics, regex blow-ups, and pathological inputs that example tests miss.
+
+Requires the nightly toolchain and `cargo-fuzz`:
+
+```bash
+rustup toolchain install nightly
+cargo +nightly install cargo-fuzz
+```
+
+Run a target (Ctrl-C to stop, or time-box with `-max_total_time`):
+
+```bash
+cd smpr
+cargo +nightly fuzz run strip_lrc_tags                       # run until stopped
+cargo +nightly fuzz run classify_lyrics -- -max_total_time=60
+```
+
+Targets:
+
+- `strip_lrc_tags` — the LRC timestamp/metadata stripper ([`util.rs`](src/util.rs))
+- `classify_lyrics` — the tiered explicit-content classifier ([`detection.rs`](src/detection.rs))
+
+Seed corpora live in `fuzz/corpus/<target>/` (committed); libFuzzer grows them
+locally as it explores (the generated additions are git-ignored). A crash writes
+a reproducer to `fuzz/artifacts/<target>/`; replay it with
+`cargo +nightly fuzz run <target> <artifact-path>`.
+
+Fuzzing is not wired into CI (it needs nightly and runs unbounded); run it
+locally when touching the parsers.
+
+> The crate exposes a `lib` target ([`src/lib.rs`](src/lib.rs)) so the fuzz
+> crate can link against these functions; `main.rs` is a thin binary over it.

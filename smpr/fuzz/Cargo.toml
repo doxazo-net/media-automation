@@ -1,0 +1,28 @@
+[package]
+name = "smpr-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.smpr]
+path = ".."
+
+[[bin]]
+name = "strip_lrc_tags"
+path = "fuzz_targets/strip_lrc_tags.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "classify_lyrics"
+path = "fuzz_targets/classify_lyrics.rs"
+test = false
+doc = false
+bench = false
