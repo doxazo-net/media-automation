@@ -1,24 +1,28 @@
+# Floor the pre-commit client so dev and CI parse/run hooks identically and
+# older clients don't introduce behavior drift.
+minimum_pre_commit_version: "3.5.0"
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b # v5.0.0
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.22.1
+    rev: 996abf60411a8d954288ac9856aae7602b80cbda # v0.22.1
     hooks:
       - id: markdownlint-cli2
         args: []
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
     hooks:
       - id: gitleaks
 
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.12
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
     hooks:
       - id: actionlint
 
