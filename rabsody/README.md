@@ -44,7 +44,7 @@ Matches the repo's Rust conventions (Rust 1.94, edition 2024):
 ```sh
 cargo fmt -- --check
 cargo clippy -- -D warnings
-cargo test
+cargo test -- --test-threads=1
 ```
 
 ## Safety notes

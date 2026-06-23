@@ -6,10 +6,11 @@
 //! live library.
 
 mod api;
+mod error;
 
-use anyhow::{Context, Result};
 use api::{AbsConfig, Client};
 use clap::{Parser, Subcommand};
+use error::{Error, Result};
 use std::collections::BTreeMap;
 
 #[derive(Parser)]
@@ -58,8 +59,15 @@ enum Planned {
     Any(#[allow(dead_code)] Vec<String>),
 }
 
-fn main() -> Result<()> {
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    if let Err(e) = run() {
+        eprintln!("rabs: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor => doctor(),
@@ -74,10 +82,15 @@ fn main() -> Result<()> {
 
 fn connect() -> Result<(Client, String)> {
     let cfg = AbsConfig::load()?;
+    // Treat an empty or whitespace-only defaultLibrary as missing config, so a
+    // blank value can never produce a malformed `/api/libraries//items` path.
     let library = cfg
         .default_library
-        .clone()
-        .context("no defaultLibrary set in abs-cli config")?;
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Error::Config("no defaultLibrary set in abs-cli config".to_string()))?;
     Ok((Client::new(&cfg), library))
 }
 
@@ -89,7 +102,7 @@ fn doctor() -> Result<()> {
         cfg.default_library.as_deref().unwrap_or("(none)")
     );
     let client = Client::new(&cfg);
-    let me = client.me().context("auth check failed (GET /api/me)")?;
+    let me = client.me()?;
     let user = me.get("username").and_then(|v| v.as_str()).unwrap_or("?");
     let kind = me.get("type").and_then(|v| v.as_str()).unwrap_or("?");
     println!("authenticated: {user} ({kind})");
@@ -156,6 +169,10 @@ fn report_stats() -> Result<()> {
     println!("  distinct narrators: {}", narrators.len());
     println!("\nTop 10 genres:");
     for (name, n) in top_n(&genres, 10) {
+        println!("  {n:5}  {name}");
+    }
+    println!("\nTop 10 tags:");
+    for (name, n) in top_n(&tags, 10) {
         println!("  {n:5}  {name}");
     }
     Ok(())

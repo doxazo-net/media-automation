@@ -11,9 +11,10 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+
+use crate::error::{Error, Result};
 
 /// abs-cli's on-disk config (`~/.abs-cli/config.json`).
 #[derive(Debug, Deserialize)]
@@ -28,11 +29,14 @@ pub struct AbsConfig {
 impl AbsConfig {
     /// Load from `~/.abs-cli/config.json`.
     pub fn load() -> Result<Self> {
-        let home = dirs::home_dir().context("could not resolve home directory")?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Config("could not resolve home directory".to_string()))?;
         let path = home.join(".abs-cli").join("config.json");
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading abs-cli config at {}", path.display()))?;
-        let cfg: AbsConfig = serde_json::from_str(&raw).context("parsing abs-cli config.json")?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            Error::Config(format!("reading abs-cli config at {}: {e}", path.display()))
+        })?;
+        let cfg: AbsConfig = serde_json::from_str(&raw)
+            .map_err(|e| Error::Config(format!("parsing abs-cli config.json: {e}")))?;
         Ok(cfg)
     }
 }
@@ -107,6 +111,9 @@ impl Client {
         // CLI (or a CI job) indefinitely: bounded TCP/TLS connect plus an
         // end-to-end ceiling covering the whole call including body read.
         let agent: ureq::Agent = ureq::Agent::config_builder()
+            // Surface HTTP status codes on the `Ok` path so `get_json` can map
+            // 401/403 to a distinct auth error instead of a generic transport one.
+            .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_global(Some(Duration::from_secs(30)))
             .build()
@@ -127,13 +134,21 @@ impl Client {
         for (k, v) in query {
             req = req.query(*k, *v);
         }
-        let body = req
-            .call()
-            .with_context(|| format!("GET {url}"))?
-            .body_mut()
+        let mut resp = req.call()?;
+        let status = resp.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(Error::Auth { status });
+        }
+        if !resp.status().is_success() {
+            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            return Err(Error::Http {
+                status,
+                body: truncate(&body),
+            });
+        }
+        resp.body_mut()
             .read_json::<T>()
-            .with_context(|| format!("decoding response from {url}"))?;
-        Ok(body)
+            .map_err(|e| Error::Parse(format!("decoding response from {url}: {e}")))
     }
 
     /// `GET /api/me` - identity / auth check.
@@ -143,6 +158,9 @@ impl Client {
 
     /// One page of items for a library.
     pub fn items_page(&self, library: &str, page: u32, limit: u32) -> Result<ItemsPage> {
+        // ABS library IDs are server-generated UUIDs read from trusted local
+        // config (abs-cli's `defaultLibrary`), never CLI/user input, so they
+        // contain no URL-reserved characters and need no percent-encoding here.
         let path = format!("/api/libraries/{library}/items");
         self.get_json(
             &path,
@@ -179,4 +197,18 @@ impl Client {
             &[("title", title), ("author", author), ("provider", provider)],
         )
     }
+}
+
+/// Truncate an HTTP error body to a bounded snippet for error messages, on a
+/// char boundary so multi-byte UTF-8 is never split.
+fn truncate(body: &str) -> String {
+    const MAX: usize = 500;
+    if body.len() <= MAX {
+        return body.to_string();
+    }
+    let end = (0..=MAX)
+        .rev()
+        .find(|&i| body.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}...", &body[..end])
 }
