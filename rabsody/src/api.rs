@@ -334,7 +334,7 @@ impl Client {
     fn get_json<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
         let url = format!("{}{}", self.server, path);
         let resp = self.send_get(&url, query)?;
-        if status_is_auth(&resp) && self.try_refresh() {
+        if status_is_auth(&resp) && self.try_refresh()? {
             return read_ok(self.send_get(&url, query)?, &url);
         }
         read_ok(resp, &url)
@@ -344,7 +344,7 @@ impl Client {
     fn post_json<B: Serialize, R: DeserializeOwned>(&self, path: &str, body: &B) -> Result<R> {
         let url = format!("{}{}", self.server, path);
         let resp = self.send_post(&url, body)?;
-        if status_is_auth(&resp) && self.try_refresh() {
+        if status_is_auth(&resp) && self.try_refresh()? {
             return read_ok(self.send_post(&url, body)?, &url);
         }
         read_ok(resp, &url)
@@ -381,12 +381,18 @@ impl Client {
 
     /// On a 401/403, exchange the stored refresh token for a fresh access token
     /// (`POST /auth/refresh` with the `x-refresh-token` header), rotate + persist
-    /// the tokens, and report whether a retry is worthwhile. Best-effort: any
-    /// failure returns `false` so the original auth error surfaces.
-    fn try_refresh(&self) -> bool {
+    /// the tokens, and report whether a retry is worthwhile.
+    ///
+    /// A missing refresh token or a failed/empty refresh exchange returns
+    /// `Ok(false)` so the original auth error surfaces. But a *persistence*
+    /// failure returns `Err`: ABS rotates the refresh token, so a refresh that
+    /// succeeds in memory yet never reaches disk would leave a stale (now
+    /// invalid) refresh token for the next run. Persist before updating the
+    /// in-memory tokens so we never report success on tokens we couldn't store.
+    fn try_refresh(&self) -> Result<bool> {
         let refresh = match self.refresh_token.borrow().clone() {
             Some(token) => token,
-            None => return false,
+            None => return Ok(false),
         };
         let url = format!("{}/auth/refresh", self.server);
         let resp = match self
@@ -396,26 +402,28 @@ impl Client {
             .send_empty()
         {
             Ok(resp) => resp,
-            Err(_) => return false,
+            Err(_) => return Ok(false),
         };
         let auth: AuthResponse = match read_ok(resp, &url) {
             Ok(auth) => auth,
-            Err(_) => return false,
+            Err(_) => return Ok(false),
         };
         if auth.user.access_token.is_empty() {
-            return false;
+            return Ok(false);
         }
+        // Persist the rotated tokens so the next run (and abs-cli) stay valid;
+        // fail loudly if that write fails rather than continuing on tokens that
+        // exist only in memory.
+        config::persist_tokens(
+            &self.source_path,
+            &auth.user.access_token,
+            auth.user.refresh_token.as_deref(),
+        )?;
         *self.access_token.borrow_mut() = auth.user.access_token.clone();
         if auth.user.refresh_token.is_some() {
             *self.refresh_token.borrow_mut() = auth.user.refresh_token.clone();
         }
-        // Persist the rotated tokens so the next run (and abs-cli) stay valid.
-        let _ = config::persist_tokens(
-            &self.source_path,
-            &auth.user.access_token,
-            auth.user.refresh_token.as_deref(),
-        );
-        true
+        Ok(true)
     }
 
     /// `GET /api/me` - identity / auth check.

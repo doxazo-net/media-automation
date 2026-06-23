@@ -48,7 +48,7 @@ persists back to whichever file supplied the credentials.
 ## Build & run
 
 ```sh
-cargo run -- login --server https://abs.example.com
+cargo run -- login --server https://abs.example.com --username alice
 cargo run -- config get
 cargo run -- doctor
 cargo run -- report stats
