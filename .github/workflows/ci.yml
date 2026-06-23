@@ -112,3 +112,24 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+  pre-commit:
+    name: pre-commit (non-cargo hooks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Enforce the repo's pre-commit hooks (gitleaks secret scan, markdownlint,
+      # actionlint, file hygiene) on every PR, independent of whether a
+      # contributor ran `pre-commit install` locally. The cargo fmt/clippy/check
+      # hooks are skipped here - they have dedicated jobs above with the proper
+      # Rust toolchain and caching, so re-running them would be redundant.
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+        env:
+          SKIP: cargo-fmt,cargo-clippy,cargo-check,cargo-fmt-rabsody,cargo-clippy-rabsody,cargo-check-rabsody
+        with:
+          extra_args: --all-files
