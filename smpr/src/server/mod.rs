@@ -580,7 +580,7 @@ pub fn authenticate_by_name(
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let device_id = uuid::Uuid::new_v4().to_string();
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("SMPR_VERSION");
 
     let auth_header = format!(
         "MediaBrowser Client=\"smpr\", Device=\"{hostname}\", \

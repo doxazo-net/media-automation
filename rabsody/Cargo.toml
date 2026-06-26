@@ -1,6 +1,8 @@
 [package]
 name = "rabsody"
-version = "0.1.0"
+# Placeholder: the real version is derived from the git tag at build time by
+# build.rs (rabsody-v* -> RABSODY_VERSION). Do not hand-edit; tag to release.
+version = "0.0.0"
 edition = "2024"
 description = "RABSody - a Rust CLI for curating an Audiobookshelf (ABS) library"
 license = "BSD-2-Clause"

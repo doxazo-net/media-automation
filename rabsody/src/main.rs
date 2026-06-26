@@ -25,7 +25,7 @@ use tasks::TasksCmd;
 #[derive(Parser)]
 #[command(
     name = "rabs",
-    version,
+    version = env!("RABSODY_VERSION"),
     about = "RABSody - Audiobookshelf curation in Rust"
 )]
 struct Cli {

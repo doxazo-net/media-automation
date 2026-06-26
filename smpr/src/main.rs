@@ -78,7 +78,7 @@ impl OverwriteOpts {
 #[command(
     name = "smpr",
     about = "Fetch lyrics from Emby/Jellyfin, detect explicit content, set parental ratings",
-    version
+    version = env!("SMPR_VERSION")
 )]
 struct Cli {
     #[command(subcommand)]
