@@ -157,6 +157,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # `gh release create --notes-from-tag` reads the annotated tag message
+      # from the LOCAL repo, so the tag (with its annotation) must be present.
+      # fetch-tags ensures the annotated tag object is fetched.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.ref }}
+          # Full fetch: a shallow clone can omit the annotated tag object even
+          # with fetch-tags, which breaks `gh release create --notes-from-tag`.
+          fetch-tags: true
+          fetch-depth: 0
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           merge-multiple: true
