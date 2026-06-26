@@ -133,8 +133,9 @@ fn filter_location_empty_when_no_match() {
 
 #[test]
 fn filter_location_empty_on_mount_view_mismatch() {
-    // The real-world trigger for the empty-match WARN: posix location prefix vs
-    // UNC-style item paths share no prefix, so the filter returns empty.
+    // Posix location prefix vs UNC-style item paths share no prefix. Here the
+    // items live under `Music`, not the requested `Classical`, so even the
+    // leaf-segment fallback declines them and the empty-match WARN path stands.
     let items = vec![
         audio_item("1", r"\\outatime\Music\Bach\air.flac"),
         audio_item("2", r"\\outatime\Music\Mozart\k525.flac"),
@@ -182,6 +183,62 @@ fn filter_location_windows_backslash() {
     let items = vec![audio_item("1", "D:\\Music\\classical\\bach.flac")];
     let filtered = scope::filter_by_location(items, "D:\\Music\\classical");
     assert_eq!(filtered.len(), 1);
+}
+
+#[test]
+fn filter_location_leaf_fallback_recovers_unc_paths() {
+    // Issue #216: Emby reports the location as posix `/share/Classical` but the
+    // indexed item paths are UNC `\\host\Classical\...`. The full-prefix match
+    // shares nothing, so without a fallback the run rates zero items. The
+    // leaf-segment fallback must recover the Classical tracks.
+    let items = vec![
+        audio_item("1", r"\\outatime\Classical\Bach\air.flac"),
+        audio_item("2", r"\\outatime\Classical\Mozart\k525.flac"),
+    ];
+    let filtered = scope::filter_by_location(items, "/share/Classical");
+    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered[0].0.id, "1");
+    assert_eq!(filtered[1].0.id, "2");
+}
+
+#[test]
+fn filter_location_leaf_fallback_is_segment_bounded() {
+    // The fallback matches the leaf as a whole `/classical/` path segment, so a
+    // sibling folder `Classical_Remix` (same library, UNC view) must NOT be
+    // swept in just because its name starts with the leaf.
+    let items = vec![
+        audio_item("1", r"\\outatime\Classical\Bach\air.flac"),
+        audio_item("2", r"\\outatime\Classical_Remix\bootleg.flac"),
+    ];
+    let filtered = scope::filter_by_location(items, "/share/Classical");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].0.id, "1");
+}
+
+#[test]
+fn filter_location_primary_match_skips_fallback() {
+    // When the full prefix matches (aligned mount views), behavior is unchanged
+    // and the leaf fallback never engages -- a same-leaf item under a different
+    // root is excluded exactly as today.
+    let items = vec![
+        audio_item("1", "/music/classical/bach.flac"),
+        audio_item("2", "/other/classical/decoy.flac"),
+    ];
+    let filtered = scope::filter_by_location(items, "/music/classical");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].0.id, "1");
+}
+
+#[test]
+fn filter_location_fallback_still_empty_when_no_leaf_match() {
+    // Neither the prefix nor the leaf segment matches: the loud empty-result
+    // path is preserved.
+    let items = vec![
+        audio_item("1", r"\\outatime\Classical\Bach\air.flac"),
+        audio_item("2", r"\\outatime\Kids_Music\raffi\baby.flac"),
+    ];
+    let filtered = scope::filter_by_location(items, "/share/Jazz");
+    assert!(filtered.is_empty());
 }
 
 // ── lookup_force_rating tests ───────────────────────────────────────

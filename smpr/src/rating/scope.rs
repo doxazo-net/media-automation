@@ -108,7 +108,30 @@ pub fn resolve_from_libraries(
     })
 }
 
-/// Post-prefetch filter: keep only items whose path starts with the location path.
+/// Bounded leaf-segment pattern (`/leaf/`) for a location, used as a fallback
+/// matcher when item paths and the library location report different mount views
+/// (e.g. UNC `\\host\Classical` vs posix `/share/Classical`), which share no
+/// prefix. Wrapping the leaf in separators keeps it a whole path component, so
+/// leaf `classical` matches `/classical/` but not `/classical_remix/`.
+///
+/// Returns `None` for a degenerate leaf (empty / separators only) to avoid a
+/// pattern like `//` that would match unrelated paths.
+fn leaf_segment(location_path: &str) -> Option<String> {
+    let leaf = normalize_path(location_leaf(location_path));
+    let leaf = leaf.trim_matches('/');
+    if leaf.is_empty() {
+        None
+    } else {
+        Some(format!("/{leaf}/"))
+    }
+}
+
+/// Post-prefetch filter: keep only items under the location.
+///
+/// Primary match is a normalized path-prefix. When that drops a non-empty set to
+/// zero -- the UNC-vs-posix mount-view mismatch (issue #216) -- it retries with a
+/// bounded leaf-segment match. The retry needs no cross-library guard because the
+/// items are already scoped to the single resolved library by the prefetch query.
 pub fn filter_by_location(
     items: Vec<(crate::server::types::AudioItemView, serde_json::Value)>,
     location_path: &str,
@@ -119,31 +142,58 @@ pub fn filter_by_location(
     // Capture representative item path roots before `into_iter` consumes `items`,
     // so an empty result can show what the real paths look like.
     let samples = sample_path_roots(&items);
+
+    let prefix_hit = items.iter().any(|(view, _)| {
+        view.path
+            .as_deref()
+            .map(|p| normalize_path(p).starts_with(&prefix_with_sep))
+            .unwrap_or(false)
+    });
+    // Engage the leaf fallback only when the prefix matched nothing in a
+    // non-empty set; `None` means use the primary prefix match.
+    let leaf = if prefix_hit {
+        None
+    } else {
+        leaf_segment(location_path)
+    };
+
     let filtered: Vec<_> = items
         .into_iter()
         .filter(|(view, _)| {
-            view.path
-                .as_deref()
-                .map(|p| normalize_path(p).starts_with(&prefix_with_sep))
-                .unwrap_or(false)
+            let Some(path) = view.path.as_deref() else {
+                return false;
+            };
+            let norm = normalize_path(path);
+            match &leaf {
+                Some(seg) => norm.contains(seg),
+                None => norm.starts_with(&prefix_with_sep),
+            }
         })
         .collect();
-    log::info!(
-        "location filter: {} / {} items under {}",
-        filtered.len(),
-        before,
-        location_path,
-    );
-    // A resolved location that filters a non-empty set down to zero almost always
-    // means the item paths use a different mount view than the library location
-    // (e.g. UNC `\\host\share` vs posix `/share`), so the prefix never matches.
-    // Warn loudly rather than returning a silently successful empty run.
+
+    match &leaf {
+        Some(seg) if !filtered.is_empty() => log::info!(
+            "location filter: {} / {} items under {} via leaf-segment fallback '{seg}' \
+             (item paths use a different mount view than the library location, e.g. UNC vs posix)",
+            filtered.len(),
+            before,
+            location_path,
+        ),
+        _ => log::info!(
+            "location filter: {} / {} items under {}",
+            filtered.len(),
+            before,
+            location_path,
+        ),
+    }
+    // Neither the prefix nor the leaf fallback matched a non-empty set: surface
+    // it loudly rather than returning a silently successful empty run.
     if filtered.is_empty() && before > 0 {
         log::warn!(
             "location '{location_path}' matched 0 of {before} items \
-             (prefix '{prefix_with_sep}'). Item paths likely use a different \
-             mount view than the library location (e.g. UNC vs posix). \
-             Sample item path roots: {}",
+             (prefix '{prefix_with_sep}', leaf fallback also empty). Item paths \
+             likely use a different mount view than the library location \
+             (e.g. UNC vs posix). Sample item path roots: {}",
             if samples.is_empty() {
                 "<none>".to_string()
             } else {
