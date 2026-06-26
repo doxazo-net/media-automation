@@ -302,6 +302,56 @@ mod tests {
         assert!(words.is_empty());
     }
 
+    fn default_engine() -> DetectionEngine {
+        use crate::config::defaults;
+        let to_vec = |s: &[&str]| s.iter().map(|w| w.to_string()).collect();
+        DetectionEngine::new(&DetectionConfig {
+            r_stems: to_vec(defaults::R_STEMS),
+            r_exact: to_vec(defaults::R_EXACT),
+            pg13_stems: to_vec(defaults::PG13_STEMS),
+            pg13_exact: to_vec(defaults::PG13_EXACT),
+            false_positives: to_vec(defaults::FALSE_POSITIVES),
+            g_genres: vec![],
+        })
+    }
+
+    #[test]
+    fn default_config_ignores_substring_false_positives() {
+        let engine = default_engine();
+        // Innocent words that contain cum/cock/pussy as substrings - including
+        // Latin liturgical text ("Dominus tecum" from the Ave Maria) - must NOT
+        // be flagged. Real-library false positives observed on an 82k track set.
+        for clean in [
+            "dominus tecum benedicta tu",
+            "the scum of the earth",
+            "a proud peacock strutting",
+            "the pussycat sang a song",
+            "our cockapoo puppy",
+            "down by lake cumberland",
+            "they were encumbered",
+            "we must circumvent it",
+        ] {
+            assert_eq!(
+                engine.classify_lyrics(clean).0,
+                None,
+                "false positive on {clean:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_config_still_flags_standalone_profanity() {
+        let engine = default_engine();
+        // The genuine standalone words must STILL classify as R.
+        for dirty in ["cum", "cock", "pussy", "cumming", "cocks", "pussies"] {
+            assert_eq!(
+                engine.classify_lyrics(dirty).0,
+                Some("R"),
+                "missed genuine profanity {dirty:?}"
+            );
+        }
+    }
+
     #[test]
     fn classify_non_ascii_passthrough() {
         let engine = DetectionEngine::new(&test_config());
