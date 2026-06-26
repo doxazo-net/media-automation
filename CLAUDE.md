@@ -217,9 +217,28 @@ GitHub Actions workflows in `.github/workflows/`:
   - **Test**: `cargo test --verbose -- --test-threads=1` (sequential — config tests mutate process-global env vars)
   - **Build**: `cargo build --release`
 
-- **release.yml**: runs on tag push (`v*`)
-  - **Check**: lint + test gate (ubuntu-only)
-  - **Build**: cross-compile matrix — Linux (musl static), macOS Intel, macOS Apple Silicon, Windows
-  - **Release**: downloads all artifacts, creates GitHub Release with auto-generated notes
+- **release.yml**: runs on **binary-namespaced tag push** — `smpr-v*` or `rabsody-v*` (e.g. `smpr-v0.4.1`, `rabsody-v0.2.0`). One parameterized workflow serves both binaries.
+  - **Setup**: parses the tag → `bin` (crate dir) + `version` (prefix stripped)
+  - **Check**: lint + test gate for that crate (ubuntu-only)
+  - **Build**: cross-compile matrix — Linux (musl static), macOS Intel, macOS Apple Silicon, Windows; passes `{BIN}_VERSION_OVERRIDE=<version>` so the binary embeds the tag version
+  - **Release**: title `<bin> <version>`, notes from the **annotated tag message** (`--notes-from-tag`)
+
+### Releasing (tag-only, no PR, no version bump)
+
+The git tag is the single source of truth for the version. Each crate's
+`Cargo.toml` `version` is a frozen `0.0.0` placeholder; `build.rs` derives the
+real version from the tag via `git describe --match '<bin>-v*'` (or a
+`{BIN}_VERSION_OVERRIDE` env var in CI), surfaced to clap `--version` and the
+smpr auth header as `env!("{BIN}_VERSION")`. **Do not hand-edit the `version`
+field.** To release, push an annotated tag (the message becomes the release
+notes):
+
+```bash
+git tag -a smpr-v0.4.1 -m "release notes here"
+git push origin smpr-v0.4.1
+```
+
+Legacy bare `v0.x` tags predate this scheme and are smpr's history; new releases
+use the namespaced form. Per-binary config lives in `.claude/release.toml`.
 
 Pre-commit hooks: `cargo fmt -- --check` and `cargo clippy -- -D warnings` (the subagent-bypass caveat is noted under Commands - run them manually).

@@ -1,19 +1,34 @@
-[versioning]
-file = "smpr/Cargo.toml"
-pattern = 'version = "{version}"'
-post_bump = ["cargo check --manifest-path smpr/Cargo.toml"]
+# Release configuration — TAG-ONLY, per-binary.
+#
+# This repo no longer bumps a version in Cargo.toml or opens a release PR.
+# The git tag is the single source of truth: build.rs in each crate derives the
+# version from the tag (Cargo.toml `version` is a frozen "0.0.0" placeholder),
+# and .github/workflows/release.yml builds the cross-compile matrix, titles the
+# release "<bin> <version>", and uses the annotated tag message as the notes.
+#
+# To release, push an annotated tag named "<bin>-v<version>":
+#
+#   git tag -a smpr-v0.4.1 -m "release notes here"
+#   git push origin smpr-v0.4.1
+#
+#   git tag -a rabsody-v0.2.0 -m "release notes here"
+#   git push origin rabsody-v0.2.0
+
+[release]
+# A pushed release tag must start with one of these per-binary prefixes.
+tag_prefixes = { smpr = "smpr-v", rabsody = "rabsody-v" }
+
+# Notes are taken from the annotated tag message (gh release --notes-from-tag);
+# there is no committed changelog or generated commit dump.
+notes_source = "annotated-tag-message"
 
 [build]
-working_dir = "smpr"
+# Releasable crates (each has its own build.rs version resolver and tag prefix).
+crates = ["smpr", "rabsody"]
+
+# Sanity checks to run from the crate's directory before tagging a release.
 pre_checks = [
     "cargo fmt -- --check",
     "cargo clippy -- -D warnings",
     "cargo test -- --test-threads=1",
 ]
-
-[release_notes]
-group_labels = { "enhancement" = "New Features", "bug" = "Bug Fixes", "documentation" = "Documentation" }
-default_group = "Improvements"
-
-[release]
-tag_prefix = "v"
