@@ -151,10 +151,14 @@ fn sample_path_roots_dedups_and_caps() {
         audio_item("3", "/share/Classical/x.flac"),
     ];
     let roots = scope::sample_path_roots(&items);
-    // UNC paths collapse to one root; posix path is a distinct root.
+    // UNC paths collapse to one root; posix path is a distinct root. Leading
+    // markers are preserved so UNC (`//`) and POSIX (`/`) stay distinguishable.
     assert_eq!(
         roots,
-        vec!["outatime/music".to_string(), "share/classical".to_string()]
+        vec![
+            "//outatime/music".to_string(),
+            "/share/classical".to_string()
+        ]
     );
     assert!(roots.len() <= 5);
 }

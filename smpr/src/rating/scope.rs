@@ -171,13 +171,27 @@ pub(crate) fn sample_path_roots(
             continue;
         };
         let norm = normalize_path(path);
-        let root: String = norm
+        // Preserve the leading root marker so the diagnostic distinguishes UNC
+        // (`//host/share`) from POSIX (`/share/...`) - the whole point of the
+        // warning. Stripping it would render both as `host/share`.
+        let (leading, rest) = if let Some(stripped) = norm.strip_prefix("//") {
+            ("//", stripped)
+        } else if let Some(stripped) = norm.strip_prefix('/') {
+            ("/", stripped)
+        } else {
+            ("", norm.as_str())
+        };
+        let root: String = rest
             .split('/')
             .filter(|s| !s.is_empty())
             .take(2)
             .collect::<Vec<_>>()
             .join("/");
-        let root = if root.is_empty() { norm } else { root };
+        let root = if root.is_empty() {
+            norm
+        } else {
+            format!("{leading}{root}")
+        };
         if !roots.contains(&root) {
             roots.push(root);
             if roots.len() >= 5 {
