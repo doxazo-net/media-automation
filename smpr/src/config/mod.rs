@@ -43,6 +43,7 @@ pub struct RawDetection {
     pub pg13: Option<RawWordList>,
     pub ignore: Option<RawIgnore>,
     pub g_genres: Option<RawGenres>,
+    pub deny_genres: Option<RawGenres>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -124,6 +125,9 @@ pub struct DetectionConfig {
     pub pg13_exact: Vec<String>,
     pub false_positives: Vec<String>,
     pub g_genres: Vec<String>,
+    /// Genres that veto the genre-G fallback even when a `g_genres` entry also
+    /// matches (e.g. film OSTs tagged both `Soundtrack` and `Classical`).
+    pub deny_genres: Vec<String>,
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -222,7 +226,15 @@ pub struct CliInput {
 // ── Config path auto-discovery ─────────────────────────────────────
 
 /// Resolve the default config file path when --config is not specified.
-/// Checks CWD for explicit_config.toml, then platform config dir.
+///
+/// Precedence (highest first; `--config` itself is handled upstream in
+/// `load_from_paths`): CWD `explicit_config.toml` > platform
+/// `~/.config/smpr/config.toml` > binary-adjacent `config.toml`.
+///
+/// The binary-adjacent step is a fallback for portable single-folder installs
+/// where the platform config dir is ephemeral or absent — e.g. Unraid's
+/// RAM-backed `/root` is wiped on every reboot, so a config dropped next to the
+/// binary on persistent storage keeps working without an explicit `--config`.
 pub fn resolve_default_config_path() -> Option<PathBuf> {
     // 1. Check CWD for explicit_config.toml
     if let Some(path) = std::env::current_dir()
@@ -233,12 +245,32 @@ pub fn resolve_default_config_path() -> Option<PathBuf> {
     }
 
     // 2. Check platform config dir
-    let platform_config = dirs::config_dir()?.join("smpr").join("config.toml");
-    if platform_config.is_file() {
-        return Some(platform_config);
+    if let Some(dir) = dirs::config_dir() {
+        let platform_config = dir.join("smpr").join("config.toml");
+        if platform_config.is_file() {
+            return Some(platform_config);
+        }
     }
 
-    None
+    // 3. Check next to the executable (portable-install fallback)
+    resolve_binary_adjacent_config_path()
+}
+
+/// Locate `config.toml` next to the running executable.
+///
+/// Impure: queries the process for its own path. Any failure (no exe path,
+/// canonicalize error, no parent dir) is treated as "not found" (`None`), never
+/// an error. Delegates the file check to the pure [`config_file_in_dir`].
+fn resolve_binary_adjacent_config_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let dir = exe.parent()?;
+    config_file_in_dir(dir)
+}
+
+/// Pure helper: `Some(dir/config.toml)` iff that path is an existing file.
+fn config_file_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
+    let candidate = dir.join("config.toml");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Testable version that takes CWD as a parameter.
@@ -524,6 +556,10 @@ fn resolve_detection(raw: &RawConfig) -> DetectionConfig {
             .unwrap_or_else(|| to_owned_vec(defaults::FALSE_POSITIVES)),
         g_genres: det
             .and_then(|d| d.g_genres.as_ref())
+            .and_then(|g| g.genres.clone())
+            .unwrap_or_default(),
+        deny_genres: det
+            .and_then(|d| d.deny_genres.as_ref())
             .and_then(|g| g.genres.clone())
             .unwrap_or_default(),
     }

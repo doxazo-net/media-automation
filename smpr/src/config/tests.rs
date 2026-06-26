@@ -763,6 +763,20 @@ fn resolve_returns_none_when_no_config_found() {
     assert!(resolved.is_none());
 }
 
+#[test]
+fn config_file_in_dir_finds_adjacent_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "[servers.test]\nurl = \"http://x\"\n").unwrap();
+    assert_eq!(super::config_file_in_dir(dir.path()), Some(config_path));
+}
+
+#[test]
+fn config_file_in_dir_none_when_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(super::config_file_in_dir(dir.path()).is_none());
+}
+
 proptest::proptest! {
     // parse_toml must return Ok or Err on any input - never panic.
     #[test]

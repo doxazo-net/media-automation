@@ -132,6 +132,34 @@ fn filter_location_empty_when_no_match() {
 }
 
 #[test]
+fn filter_location_empty_on_mount_view_mismatch() {
+    // The real-world trigger for the empty-match WARN: posix location prefix vs
+    // UNC-style item paths share no prefix, so the filter returns empty.
+    let items = vec![
+        audio_item("1", r"\\outatime\Music\Bach\air.flac"),
+        audio_item("2", r"\\outatime\Music\Mozart\k525.flac"),
+    ];
+    let filtered = scope::filter_by_location(items, "/share/Classical");
+    assert!(filtered.is_empty());
+}
+
+#[test]
+fn sample_path_roots_dedups_and_caps() {
+    let items = vec![
+        audio_item("1", r"\\outatime\Music\Bach\air.flac"),
+        audio_item("2", r"\\outatime\Music\Mozart\k525.flac"),
+        audio_item("3", "/share/Classical/x.flac"),
+    ];
+    let roots = scope::sample_path_roots(&items);
+    // UNC paths collapse to one root; posix path is a distinct root.
+    assert_eq!(
+        roots,
+        vec!["outatime/music".to_string(), "share/classical".to_string()]
+    );
+    assert!(roots.len() <= 5);
+}
+
+#[test]
 fn filter_location_trailing_slash() {
     let items = vec![audio_item("1", "/music/classical/bach.flac")];
     let filtered = scope::filter_by_location(items, "/music/classical/");
@@ -515,6 +543,7 @@ mod integration {
                 pg13_exact: vec!["hoe".into()],
                 false_positives: vec!["cocktail".into()],
                 g_genres: vec!["Classical".into()],
+                deny_genres: vec![],
             },
             overwrite: true,
             dry_run: true,

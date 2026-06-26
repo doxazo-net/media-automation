@@ -116,6 +116,9 @@ pub fn filter_by_location(
     let prefix = normalize_path(location_path.trim_end_matches(['/', '\\']));
     let prefix_with_sep = format!("{prefix}/");
     let before = items.len();
+    // Capture representative item path roots before `into_iter` consumes `items`,
+    // so an empty result can show what the real paths look like.
+    let samples = sample_path_roots(&items);
     let filtered: Vec<_> = items
         .into_iter()
         .filter(|(view, _)| {
@@ -131,12 +134,58 @@ pub fn filter_by_location(
         before,
         location_path,
     );
+    // A resolved location that filters a non-empty set down to zero almost always
+    // means the item paths use a different mount view than the library location
+    // (e.g. UNC `\\host\share` vs posix `/share`), so the prefix never matches.
+    // Warn loudly rather than returning a silently successful empty run.
+    if filtered.is_empty() && before > 0 {
+        log::warn!(
+            "location '{location_path}' matched 0 of {before} items \
+             (prefix '{prefix_with_sep}'). Item paths likely use a different \
+             mount view than the library location (e.g. UNC vs posix). \
+             Sample item path roots: {}",
+            if samples.is_empty() {
+                "<none>".to_string()
+            } else {
+                samples.join(", ")
+            }
+        );
+    }
     filtered
 }
 
 /// Normalize path separators to forward slash and lowercase for comparison.
 fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
+}
+
+/// Representative, de-duplicated leading path roots (first two normalized
+/// segments) drawn from real item paths, capped at 5. Pure and side-effect
+/// free so the diagnostic content is unit-testable without a log harness.
+pub(crate) fn sample_path_roots(
+    items: &[(crate::server::types::AudioItemView, serde_json::Value)],
+) -> Vec<String> {
+    let mut roots: Vec<String> = Vec::new();
+    for (view, _) in items {
+        let Some(path) = view.path.as_deref() else {
+            continue;
+        };
+        let norm = normalize_path(path);
+        let root: String = norm
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("/");
+        let root = if root.is_empty() { norm } else { root };
+        if !roots.contains(&root) {
+            roots.push(root);
+            if roots.len() >= 5 {
+                break;
+            }
+        }
+    }
+    roots
 }
 
 /// Look up force_rating from server config for the given library/location scope.

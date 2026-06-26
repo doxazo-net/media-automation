@@ -82,11 +82,11 @@ Clap-derived parser with four subcommands:
 
 `Config::load_from_paths(&CliInput)` is the single entry point. Resolution order:
 
-1. **Config path**: `--config` flag > CWD `explicit_config.toml` > `~/.config/smpr/config.toml` (platform config dir)
+1. **Config path**: `--config` flag > CWD `explicit_config.toml` > `~/.config/smpr/config.toml` (platform config dir) > `config.toml` next to the binary (portable-install fallback for environments where the platform dir is ephemeral/absent, e.g. Unraid's RAM-backed `/root`)
 2. **TOML parse**: explicit `--config` path must exist; auto-discovered paths are best-effort (ignored in one-off mode if unreadable)
 3. **.env file**: `--env-file` flag > same dir as resolved config > CWD `.env`. Uses `dotenvy::from_path`.
 4. **Server resolution** (`resolve_servers`): `--server-url`+`--api-key` (one-off) > TOML `[servers.*]` sections. API keys from env vars as `{LABEL_UPPER}_API_KEY` (hyphens replaced with underscores). `--server` flag filters to named servers.
-5. **Detection**: TOML `[detection.r]`, `[detection.pg13]`, `[detection.ignore]`, `[detection.g_genres]` > hardcoded defaults in `config/defaults.rs`.
+5. **Detection**: TOML `[detection.r]`, `[detection.pg13]`, `[detection.ignore]`, `[detection.g_genres]`, `[detection.deny_genres]` > hardcoded defaults in `config/defaults.rs`. `[detection.deny_genres]` (default empty) vetoes the genre-G fallback when a track carries one of its genres even if a `g_genres` entry also matches (e.g. a film OST tagged both `Soundtrack` and `Classical`); such tracks are left unrated and reported with action `review`.
 6. **Overwrite**: CLI flag > TOML `[general].overwrite` > default `true`.
 7. **Report path**: CLI `--report` > TOML `[report].output_path` > None.
 
@@ -138,7 +138,7 @@ All three workflows follow the same pattern: resolve library scope → prefetch 
 
 **Action decisions** (`rating/action.rs`): `decide_rating_action` and `decide_clear_action` are pure functions — no server calls. `apply_rating` performs the GET+POST round-trip. Auth errors (401/403) abort the entire workflow via `RatingError::Auth`.
 
-**Library scoping** (`rating/scope.rs`): `resolve_from_libraries` resolves `--library` and `--location` flags against `VirtualFolder` data. `filter_by_location` is a post-prefetch path-prefix filter with normalized separators. `lookup_force_rating` resolves config-level force ratings with precedence: location > library.
+**Library scoping** (`rating/scope.rs`): `resolve_from_libraries` resolves `--library` and `--location` flags against `VirtualFolder` data. `filter_by_location` is a post-prefetch, case-insensitive, separator-normalized path-prefix filter against each item's reported `Path`. When a resolved `--location` filters a non-empty set down to zero, it emits a `log::warn!` (visible at the default log level) naming the prefix used and sample real item path roots, because that almost always means the item paths use a different mount view than the library location (e.g. UNC `\\host\share` vs posix `/share`) rather than a genuinely empty folder. `lookup_force_rating` resolves config-level force ratings with precedence: location > library.
 
 **Result types**: `ItemResult` captures item metadata, tier, matched words, previous rating, action taken, source (Lyrics/Genre/Force/Reset), and server name. `RatingAction` enum: Set, Cleared, Skipped, AlreadyCorrect, DryRun, DryRunClear, Error.
 

@@ -97,6 +97,12 @@ smpr looks for config in this order:
    - Linux: `~/.config/smpr/config.toml`
    - macOS: `~/Library/Application Support/smpr/config.toml`
    - Windows: `%APPDATA%\smpr\config.toml`
+4. `config.toml` next to the `smpr` binary
+
+Step 4 is a fallback for portable, single-folder installs where the platform
+config directory is ephemeral or absent (for example Unraid's RAM-backed
+`/root`, which is wiped on every reboot). Keep `config.toml` and its `.env`
+beside the binary on persistent storage and they are picked up automatically.
 
 ### API keys
 
@@ -125,9 +131,25 @@ force_rating = "G"  # force tracks in this location to G
 [detection.g_genres]
 genres = ["Ambient", "Classical", "Instrumental", "Piano"]
 
+# Genres that VETO the genre-G fallback even if a g_genres entry also matches.
+# Use for film OSTs tagged "Classical": instead of a blind G, such tracks are
+# left unrated and reported with action "review".
+[detection.deny_genres]
+genres = ["Soundtrack", "Original Score"]
+
 [general]
 overwrite = false  # skip tracks that already have a rating
 ```
+
+### Location scoping (`--location`)
+
+`--location <name>` keeps only items whose reported `Path` starts with that
+library location's path. Matching is case-insensitive and separator-normalized
+(`\` becomes `/`). If your server reports library locations in one path scheme
+but items report another (for example posix locations like `/share/Classical`
+while items carry UNC paths like `\\host\Music\...`), the prefix never matches
+and the scope is empty; smpr emits a `WARN` naming the prefix it used and sample
+item path roots so the mismatch is obvious rather than a silent empty run.
 
 ### Multi-server
 

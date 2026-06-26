@@ -136,6 +136,8 @@ fn build_raw_config(
                     genres: Some(genres.genres.clone()),
                 })
             },
+            // The wizard does not prompt for deny_genres yet; omit from output.
+            deny_genres: None,
         })
     };
 

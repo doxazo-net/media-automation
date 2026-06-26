@@ -25,6 +25,10 @@ pub enum RatingAction {
     DryRun,
     /// Dry-run: would have cleared a rating.
     DryRunClear,
+    /// No rating applied because the genre-G fallback was vetoed by a
+    /// `deny_genres` match (e.g. a film OST tagged `Soundtrack`). Left unrated
+    /// and surfaced for manual review rather than blind-rated G.
+    Review,
     /// Server update failed (non-auth error).
     Error(String),
 }
@@ -39,6 +43,7 @@ impl RatingAction {
             Self::AlreadyCorrect => "already_correct",
             Self::DryRun => "dry_run",
             Self::DryRunClear => "dry_run_clear",
+            Self::Review => "review",
             Self::Error(_) => "error",
         }
     }
@@ -305,6 +310,23 @@ fn rate_item(
 
     // No lyrics — try genre fallback
     if let Some(matched_genre) = engine.match_g_genre(&view.genres) {
+        // A denied genre vetoes the blind genre-G: leave the track unrated and
+        // flag it for review rather than applying G we can't verify from lyrics.
+        if let Some(denied) = engine.denied_genre(&view.genres) {
+            log::debug!("{label}: genre-G vetoed by deny_genres ('{denied}'); left for review");
+            return Ok(ItemResult {
+                item_id: view.id.clone(),
+                path: view.path.clone(),
+                artist: view.album_artist.clone(),
+                album: view.album.clone(),
+                tier: None,
+                matched_words: vec![denied.to_string()],
+                previous_rating: prev.map(String::from),
+                action: RatingAction::Review,
+                source: Source::Genre,
+                server_name: server_name.to_string(),
+            });
+        }
         let act = action::decide_rating_action("G", prev, config.overwrite, config.dry_run);
         let act = if matches!(act, RatingAction::Set) {
             action::apply_rating(client, &view.id, "G", label)?
@@ -466,6 +488,7 @@ pub struct SummaryCounts {
     pub g_genre_dry: usize,
     pub dry_run: usize,
     pub skipped: usize,
+    pub needs_review: usize,
     pub errors: usize,
 }
 
@@ -502,6 +525,7 @@ impl SummaryCounts {
                 (RatingAction::DryRun, _) => c.dry_run += 1,
                 (RatingAction::DryRunClear, _) => c.dry_run += 1,
                 (RatingAction::Skipped, _) => c.skipped += 1,
+                (RatingAction::Review, _) => c.needs_review += 1,
                 (RatingAction::Error(_), _) => c.errors += 1,
             }
         }
@@ -535,6 +559,9 @@ pub fn print_summary(results: &[ItemResult], label: &str) {
     }
     if c.skipped > 0 {
         println!("  Skipped:             {}", c.skipped);
+    }
+    if c.needs_review > 0 {
+        println!("  Needs review (deny): {}", c.needs_review);
     }
     if c.dry_run > 0 {
         println!("  Dry-run would act:   {}", c.dry_run);

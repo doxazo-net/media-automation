@@ -11,6 +11,7 @@ pub struct DetectionEngine {
     pg13_exact_patterns: Vec<(String, Regex)>,
     false_positives: Vec<String>,
     g_genres: Vec<String>,
+    deny_genres: Vec<String>,
 }
 
 fn compile_exact_patterns(words: &[String]) -> Vec<(String, Regex)> {
@@ -70,6 +71,11 @@ impl DetectionEngine {
                 .map(|s| s.to_lowercase())
                 .collect(),
             g_genres: config.g_genres.iter().map(|s| s.to_lowercase()).collect(),
+            deny_genres: config
+                .deny_genres
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
         }
     }
 
@@ -80,6 +86,17 @@ impl DetectionEngine {
             }
         }
         None
+    }
+
+    /// Returns the first genre present in the deny list (case-insensitive), if
+    /// any. A denied genre vetoes the genre-G fallback even when `match_g_genre`
+    /// also matches - e.g. a film OST tagged both `Soundtrack` and `Classical`
+    /// should not be blind-rated G.
+    pub fn denied_genre<'a>(&self, genres: &'a [String]) -> Option<&'a str> {
+        genres
+            .iter()
+            .find(|g| self.deny_genres.contains(&g.to_lowercase()))
+            .map(|g| g.as_str())
     }
 
     pub fn classify_lyrics(&self, text: &str) -> (Option<&'static str>, Vec<String>) {
@@ -126,6 +143,7 @@ mod tests {
             pg13_exact: vec!["hoe".into()],
             false_positives: vec!["Cocktail".into()],
             g_genres: vec!["Classical".into(), "Ambient".into()],
+            deny_genres: vec![],
         }
     }
 
@@ -287,6 +305,7 @@ mod tests {
             pg13_exact: vec![],
             false_positives: vec![],
             g_genres: vec![],
+            deny_genres: vec![],
         };
         let engine = DetectionEngine::new(&config);
         let (_tier, words) = engine.classify_lyrics("fuck this");
@@ -312,6 +331,7 @@ mod tests {
             pg13_exact: to_vec(defaults::PG13_EXACT),
             false_positives: to_vec(defaults::FALSE_POSITIVES),
             g_genres: vec![],
+            deny_genres: vec![],
         })
     }
 
@@ -353,6 +373,41 @@ mod tests {
     }
 
     #[test]
+    fn default_config_exact_handles_punctuation_and_case() {
+        let engine = default_engine();
+        // Retiered exact words must still fire across casing and adjacent
+        // punctuation - the (?i)\b...\b pattern handles both. (Codoki #212.)
+        for dirty in ["that Pussy.", "COCK!", "(cum)", "what a cock?", "PUSSY"] {
+            assert_eq!(
+                engine.classify_lyrics(dirty).0,
+                Some("R"),
+                "expected R for {dirty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_config_hyphen_is_a_word_boundary() {
+        let engine = default_engine();
+        // Documents the boundary semantics: a hyphen is a word boundary, so
+        // "pussy-cat" matches \bpussy\b, while the solid compound "pussycat"
+        // does not (no boundary before "cat") and stays clean.
+        assert_eq!(engine.classify_lyrics("pussy-cat").0, Some("R"));
+        assert_eq!(engine.classify_lyrics("the pussycat sang").0, None);
+    }
+
+    #[test]
+    fn default_config_diacritics_do_not_reintroduce_false_positives() {
+        let engine = default_engine();
+        // Latin liturgical text with diacritics still must not flag - "tecum"
+        // never matches \bcum\b regardless of accents elsewhere in the line.
+        assert_eq!(
+            engine.classify_lyrics("Dóminus tecum, benedícta tu").0,
+            None
+        );
+    }
+
+    #[test]
     fn classify_non_ascii_passthrough() {
         let engine = DetectionEngine::new(&test_config());
         let (tier, words) = engine.classify_lyrics("café résumé naïve");
@@ -390,6 +445,7 @@ mod tests {
             pg13_exact: vec![],
             false_positives: vec![],
             g_genres: vec![], // no genres configured
+            deny_genres: vec![],
         };
         let engine = DetectionEngine::new(&config);
         let genres = vec!["Classical".into()];
@@ -402,6 +458,31 @@ mod tests {
         // Both "Ambient" and "Classical" are in g_genres
         let genres = vec!["Ambient".into(), "Classical".into()];
         assert_eq!(engine.match_g_genre(&genres), Some("Ambient")); // first in item's list
+    }
+
+    #[test]
+    fn denied_genre_vetoes_even_when_allow_list_also_matches() {
+        let mut config = test_config(); // g_genres: Classical, Ambient
+        config.deny_genres = vec!["Soundtrack".into()];
+        let engine = DetectionEngine::new(&config);
+        // A film OST tagged both an allow-listed and a denied genre: the
+        // allow-list still matches, but the deny list flags it for veto.
+        let genres = vec!["Classical".into(), "Soundtrack".into()];
+        assert_eq!(engine.match_g_genre(&genres), Some("Classical"));
+        assert_eq!(engine.denied_genre(&genres), Some("Soundtrack"));
+        // Case-insensitive.
+        assert_eq!(
+            engine.denied_genre(&["soundtrack".into()]),
+            Some("soundtrack")
+        );
+        // No denied genre present.
+        assert_eq!(engine.denied_genre(&["Classical".into()]), None);
+    }
+
+    #[test]
+    fn denied_genre_none_when_deny_list_empty() {
+        let engine = DetectionEngine::new(&test_config()); // deny_genres empty
+        assert_eq!(engine.denied_genre(&["Soundtrack".into()]), None);
     }
 
     #[test]
@@ -438,9 +519,11 @@ mod tests {
             r_stems in arb_words(), r_exact in arb_words(),
             pg13_stems in arb_words(), pg13_exact in arb_words(),
             false_positives in arb_words(), g_genres in arb_words(),
+            deny_genres in arb_words(),
         ) -> DetectionConfig {
             DetectionConfig {
                 r_stems, r_exact, pg13_stems, pg13_exact, false_positives, g_genres,
+                deny_genres,
             }
         }
     }
@@ -535,6 +618,7 @@ mod tests {
                 pg13_exact: Vec::new(),
                 false_positives: cfg.false_positives.clone(),
                 g_genres: cfg.g_genres.clone(),
+                deny_genres: cfg.deny_genres.clone(),
             };
             let r_engine = DetectionEngine::new(&r_only);
             if r_engine.classify_lyrics(&text).0 == Some("R") {

@@ -25,6 +25,7 @@ fn sample_config() -> RawConfig {
             g_genres: Some(RawGenres {
                 genres: Some(vec!["Rock".to_string(), "Jazz".to_string()]),
             }),
+            deny_genres: None,
         }),
         general: Some(RawGeneral {
             overwrite: Some(true),
