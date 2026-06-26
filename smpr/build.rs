@@ -17,15 +17,38 @@ fn main() {
     let version = resolve_version();
     println!("cargo:rustc-env=SMPR_VERSION={version}");
     println!("cargo:rerun-if-env-changed=SMPR_VERSION_OVERRIDE");
-    // Refresh the embedded version when the git ref state changes. Paths are
-    // relative to the crate root (`.git` lives one level up). Only emit watches
-    // for paths that exist so an absent `.git` (source tarball) does not force a
-    // perpetual rebuild.
-    for rel in ["../.git/HEAD", "../.git/packed-refs", "../.git/refs/tags"] {
-        if Path::new(rel).exists() {
-            println!("cargo:rerun-if-changed={rel}");
+    watch_git_ref_state();
+}
+
+/// Re-run the build script when the git ref state (HEAD / tags) changes, so the
+/// embedded version refreshes on new commits and tags. `git rev-parse
+/// --git-path` resolves each path against the real git dir, so this works
+/// regardless of where the crate sits in the tree and in worktrees/submodules
+/// (where `.git` is a file pointer and tags live in a separate common dir).
+/// Best-effort: silently skip if git is unavailable (e.g. a source tarball), so
+/// a missing `.git` never forces a perpetual rebuild.
+fn watch_git_ref_state() {
+    for spec in ["HEAD", "packed-refs", "refs/tags"] {
+        if let Some(path) = git_path(spec)
+            && Path::new(&path).exists()
+        {
+            println!("cargo:rerun-if-changed={path}");
         }
     }
+}
+
+/// Resolve a git ref path (e.g. `HEAD`, `refs/tags`) against the real git dir.
+/// Returns `None` if git is unavailable or the lookup fails.
+fn git_path(spec: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-path", spec])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!path.is_empty()).then_some(path)
 }
 
 fn resolve_version() -> String {
