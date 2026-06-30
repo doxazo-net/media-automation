@@ -198,7 +198,7 @@ fn collect_ids(file_ids: Vec<String>, selection: &SelectionOpts) -> Vec<String> 
 
 /// Parse a `--min-free` size: a bare byte count, or a number with a binary unit
 /// suffix (`B`/`KiB`/`MiB`/`GiB`/`TiB`, case-insensitive). `None` input -> `None`.
-fn parse_size(input: Option<&str>) -> Result<Option<u64>> {
+pub(crate) fn parse_size(input: Option<&str>) -> Result<Option<u64>> {
     let Some(raw) = input else { return Ok(None) };
     let s = raw.trim();
     let bad = || {

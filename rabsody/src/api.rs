@@ -814,6 +814,36 @@ impl Client {
         self.post_ok(&path, &serde_json::json!({}))
     }
 
+    /// `POST /api/tools/item/{id}/encode-m4b` - start an m4b encode. Async on the
+    /// server (track via `GET /api/tasks`); the POST returns when queued.
+    /// Optional `bitrate`/`codec` pass through as query params to the server's
+    /// merge manager; omitted, the server applies its own source-aware defaults.
+    pub fn encode_m4b_start(
+        &self,
+        item_id: &str,
+        bitrate: Option<&str>,
+        codec: Option<&str>,
+    ) -> Result<()> {
+        let mut path = format!("/api/tools/item/{}/encode-m4b", encode_segment(item_id));
+        let mut sep = '?';
+        for (key, val) in [("bitrate", bitrate), ("codec", codec)] {
+            if let Some(val) = val {
+                path.push(sep);
+                path.push_str(key);
+                path.push('=');
+                path.push_str(&encode_segment(val));
+                sep = '&';
+            }
+        }
+        self.post_ok(&path, &serde_json::json!({}))
+    }
+
+    /// `DELETE /api/tools/item/{id}/encode-m4b` - cancel an in-progress encode.
+    pub fn encode_m4b_cancel(&self, item_id: &str) -> Result<()> {
+        let path = format!("/api/tools/item/{}/encode-m4b", encode_segment(item_id));
+        self.delete_ok(&path)
+    }
+
     /// PATCH that only checks status (no JSON decode) - for endpoints that reply
     /// with a non-JSON body like the plain `OK` ABS returns for some writes.
     fn patch_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
@@ -1286,5 +1316,36 @@ mod tests {
             line,
             "POST /api/tools/item/li_1/embed-metadata?backup=1&forceEmbedChapters=1 HTTP/1.1"
         );
+    }
+
+    #[test]
+    fn encode_m4b_start_omits_unset_params() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port)
+            .encode_m4b_start("li_1", None, None)
+            .unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        assert_eq!(line, "POST /api/tools/item/li_1/encode-m4b HTTP/1.1");
+    }
+
+    #[test]
+    fn encode_m4b_start_passes_bitrate_and_codec() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port)
+            .encode_m4b_start("li_1", Some("128k"), Some("copy"))
+            .unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        assert_eq!(
+            line,
+            "POST /api/tools/item/li_1/encode-m4b?bitrate=128k&codec=copy HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn encode_m4b_cancel_sends_delete() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port).encode_m4b_cancel("li_1").unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        assert_eq!(line, "DELETE /api/tools/item/li_1/encode-m4b HTTP/1.1");
     }
 }
