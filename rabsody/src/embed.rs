@@ -25,7 +25,7 @@ use crate::api::{self, Client};
 use crate::cache;
 use crate::config::Credentials;
 use crate::error::{Error, Result};
-use crate::harness::{SelectionOpts, WriteContext, WriteOpts, WriteRequest, preview};
+use crate::harness::{SelectionOpts, WriteContext, WriteOpts, WriteOutcome, WriteRequest, preview};
 use crate::tasks::{TaskPoller, WaitResult};
 
 /// Default minimum free space required under `--backup` (2 GiB).
@@ -58,6 +58,12 @@ pub fn run_batch_embed(
     purge_every: usize,
     write: WriteOpts,
 ) -> Result<()> {
+    // Guard the divisor first: `(i + 1) % purge_every` below panics on 0.
+    if purge_every == 0 {
+        return Err(Error::Config(
+            "--purge-every must be greater than 0".to_string(),
+        ));
+    }
     let file_ids = match file {
         Some(path) => crate::items::parse_id_file(&crate::items::read_input(None, Some(path))?)?,
         None => Vec::new(),
@@ -100,14 +106,15 @@ pub fn run_batch_embed(
         {
             let space = cache::free_space(path)?;
             if space.available < *threshold {
-                eprintln!(
-                    "ABORT after {} item(s): {} free at {}, below --min-free {}",
+                // Abort as a failure (non-zero exit), not a silent partial run -
+                // automation must see that items below the threshold were skipped.
+                return Err(Error::Config(format!(
+                    "aborted after {} item(s): {} free at {}, below --min-free {}",
                     i,
                     human(space.available),
                     path.display(),
                     human(*threshold),
-                );
-                break;
+                )));
             }
         }
 
@@ -115,6 +122,17 @@ pub fn run_batch_embed(
         let req = embed_request(client.server(), id, &current, backup);
         let outcome = ctx.execute(&req, || embed_one(&client, id, backup, force_chapters))?;
         println!("{}", preview::format_line(&req, &outcome));
+        // The harness collapses a non-auth embed failure (e.g. a task timeout)
+        // into WriteOutcome::Error rather than Err. In apply mode that must stop
+        // the batch: continuing would queue the next item while this one may
+        // still be running on the server, breaking the one-at-a-time guarantee.
+        if write.apply
+            && let WriteOutcome::Error(msg) = &outcome
+        {
+            return Err(Error::Connection(format!(
+                "embed failed for {id}; aborting batch before queueing more items: {msg}"
+            )));
+        }
         outcomes.push(outcome);
 
         // Defense-in-depth: purge the items cache every N items under --backup.
@@ -244,6 +262,14 @@ mod tests {
         assert!(parse_size(Some("abc")).is_err());
         assert!(parse_size(Some("12zb")).is_err());
         assert!(parse_size(Some("-5")).is_err());
+    }
+
+    #[test]
+    fn batch_embed_rejects_zero_purge_every() {
+        // The guard is the first statement, before any I/O, so this exercises
+        // it without a server: --purge-every 0 must error, not panic later.
+        let err = run_batch_embed(None, false, false, None, 0, WriteOpts::default());
+        assert!(matches!(err, Err(Error::Config(_))));
     }
 
     #[test]
