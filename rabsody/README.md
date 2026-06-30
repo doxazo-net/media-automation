@@ -39,6 +39,13 @@ Implemented today:
 - `rabsody search <query>` - search within the default library (JSON).
 - `rabsody tasks list [--wait]` - list server tasks; `--wait` blocks until the queue
   drains (the reusable poller future bulk ops will serialize on).
+- `rabsody cache purge|purge-items` - clear the server cache (dry-run unless
+  `--apply`; the cache regenerates on demand).
+- `rabsody cache free-space [--path <dir>] [--json]` - report free/total disk
+  space for a local path. ABS has no disk free-space API, so this measures a
+  *local* path (the ABS data/cache dir when co-located): `--path` or the
+  `[cache].dataPath` config. It is the primitive the bulk embed/encode disk
+  guards build on.
 
 Planned command families (stubbed): `asin`, `chapters`, `fields`.
 See the **"RABSody: abs-cli parity"** milestone / the parity epic for the roadmap.
@@ -53,6 +60,16 @@ transparently on the next request and the rotated tokens are persisted.
 Until a native config exists, RABSody falls back to `abs-cli`'s
 `~/.abs-cli/config.json` (same keys), so existing setups keep working; a refresh
 persists back to whichever file supplied the credentials.
+
+An optional `[cache]` table holds native-only settings:
+
+```toml
+[cache]
+dataPath = "/mnt/user/appdata/audiobookshelf"  # local ABS data/cache dir
+```
+
+`dataPath` is the local filesystem path `cache free-space` queries (and the
+embed/encode disk guards will use). It is absent from the abs-cli JSON fallback.
 
 ## Build & run
 

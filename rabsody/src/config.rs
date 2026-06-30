@@ -26,6 +26,20 @@ pub struct StoredConfig {
     pub refresh_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_library: Option<String>,
+    /// Native-config-only settings (absent in the abs-cli JSON fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CacheConfig>,
+}
+
+/// Optional `[cache]` settings in the native config. `data_path` points at a
+/// local filesystem path (the ABS data/cache dir, when RABSody is co-located
+/// with the server) so `cache free-space` can run a real `statvfs`/`df`. ABS
+/// exposes no disk free-space API, so without this there is nothing to measure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
 }
 
 impl StoredConfig {
@@ -194,6 +208,7 @@ mod tests {
             access_token: "atk".to_string(),
             refresh_token: None,
             default_library: Some("lib1".to_string()),
+            cache: None,
         };
         let s = toml::to_string_pretty(&cfg).unwrap();
         assert!(s.contains("accessToken ="));
