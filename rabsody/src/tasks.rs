@@ -146,6 +146,7 @@ mod tests {
                 access_token: "t".to_string(),
                 refresh_token: None,
                 default_library: None,
+                cache: None,
             },
             source_path: std::path::PathBuf::from("/dev/null"),
         });

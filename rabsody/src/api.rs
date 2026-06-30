@@ -785,6 +785,19 @@ impl Client {
         self.post_ok(path, &body)
     }
 
+    /// `POST /api/cache/purge` - purge the entire server cache. ABS replies with
+    /// an empty 200; the cache regenerates on demand.
+    pub fn purge_cache(&self) -> Result<()> {
+        self.post_ok("/api/cache/purge", &serde_json::json!({}))
+    }
+
+    /// `POST /api/cache/items/purge` - purge the items cache only. ABS replies
+    /// with an empty 200. (Endpoint path is `cache/items/purge`; the CLI verb is
+    /// `cache purge-items`, mirroring abs-cli.)
+    pub fn purge_items_cache(&self) -> Result<()> {
+        self.post_ok("/api/cache/items/purge", &serde_json::json!({}))
+    }
+
     /// PATCH that only checks status (no JSON decode) - for endpoints that reply
     /// with a non-JSON body like the plain `OK` ABS returns for some writes.
     fn patch_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
@@ -823,6 +836,7 @@ pub fn login(server: &str, username: &str, password: &str) -> Result<Credentials
             access_token: auth.user.access_token,
             refresh_token: auth.user.refresh_token,
             default_library: auth.user_default_library_id,
+            cache: None,
         },
         source_path: StoredConfig::native_path()?,
     })
@@ -962,6 +976,7 @@ mod tests {
                 access_token: "test-token".to_string(),
                 refresh_token: None,
                 default_library: None,
+                cache: None,
             },
             source_path: std::path::PathBuf::from("/dev/null"),
         })
@@ -1202,5 +1217,33 @@ mod tests {
         );
         let got = client_for(port).items_batch_get_raw(&["li_1"]).unwrap();
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn purge_cache_posts_to_cache_purge() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port).purge_cache().unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        assert_eq!(line, "POST /api/cache/purge HTTP/1.1");
+    }
+
+    #[test]
+    fn purge_items_cache_posts_to_cache_items_purge() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port).purge_items_cache().unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        // Endpoint path is cache/items/purge even though the CLI verb is purge-items.
+        assert_eq!(line, "POST /api/cache/items/purge HTTP/1.1");
+    }
+
+    #[test]
+    fn purge_cache_maps_500_to_http() {
+        let port = serve_once(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom",
+        );
+        match client_for(port).purge_cache() {
+            Err(Error::Http { status, .. }) => assert_eq!(status, 500),
+            other => panic!("expected Http 500, got {other:?}"),
+        }
     }
 }

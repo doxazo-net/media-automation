@@ -7,6 +7,7 @@
 
 mod api;
 mod auth;
+mod cache;
 mod config;
 mod error;
 mod harness;
@@ -15,6 +16,7 @@ mod metadata;
 mod tasks;
 
 use auth::ConfigCmd;
+use cache::CacheCmd;
 use clap::{Parser, Subcommand};
 use error::{Error, Result};
 use items::ItemsCmd;
@@ -68,6 +70,9 @@ enum Command {
     /// Server tasks: list (optionally wait until drained).
     #[command(subcommand)]
     Tasks(TasksCmd),
+    /// Server cache: purge / purge-items, plus a local free-space query.
+    #[command(subcommand)]
+    Cache(CacheCmd),
     /// ASIN identification and correction (planned).
     #[command(subcommand)]
     Asin(Planned),
@@ -116,6 +121,7 @@ fn run() -> Result<()> {
         Command::Metadata(cmd) => metadata::run(cmd),
         Command::Search { query } => search(query),
         Command::Tasks(cmd) => tasks::run(cmd),
+        Command::Cache(cmd) => cache::run(cmd),
         Command::Asin(_) | Command::Chapters(_) | Command::Fields(_) => {
             // Exit non-zero so scripts/CI don't read an unimplemented family as
             // a successful no-op.
