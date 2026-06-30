@@ -30,6 +30,8 @@ use crate::tasks::{TaskPoller, WaitResult};
 
 /// Default minimum free space required under `--backup` (2 GiB).
 const DEFAULT_MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
+/// Default cadence for the defense-in-depth items-cache purge.
+const DEFAULT_PURGE_EVERY: usize = 50;
 /// Per-item embed task budget (large files can take a while to mux).
 const TASK_TIMEOUT: Duration = Duration::from_secs(600);
 const TASK_INTERVAL: Duration = Duration::from_secs(2);
@@ -55,10 +57,11 @@ pub fn run_batch_embed(
     backup: bool,
     force_chapters: bool,
     min_free: Option<String>,
-    purge_every: usize,
+    purge_every: Option<usize>,
     write: WriteOpts,
 ) -> Result<()> {
     // Guard the divisor first: `(i + 1) % purge_every` below panics on 0.
+    let purge_every = purge_every.unwrap_or(DEFAULT_PURGE_EVERY);
     if purge_every == 0 {
         return Err(Error::Config(
             "--purge-every must be greater than 0".to_string(),
@@ -268,7 +271,7 @@ mod tests {
     fn batch_embed_rejects_zero_purge_every() {
         // The guard is the first statement, before any I/O, so this exercises
         // it without a server: --purge-every 0 must error, not panic later.
-        let err = run_batch_embed(None, false, false, None, 0, WriteOpts::default());
+        let err = run_batch_embed(None, false, false, None, Some(0), WriteOpts::default());
         assert!(matches!(err, Err(Error::Config(_))));
     }
 

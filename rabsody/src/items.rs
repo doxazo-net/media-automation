@@ -155,12 +155,14 @@ pub enum ItemsCmd {
         /// Re-embed chapters (ABS `forceEmbedChapters=1`).
         #[arg(long)]
         force_chapters: bool,
-        /// Abort if free space falls below this (e.g. `2GiB`); only with `--backup`.
-        #[arg(long)]
+        /// Abort if free space falls below this (e.g. `2GiB`). Requires `--backup`
+        /// (it guards the per-item backups; a no-op otherwise).
+        #[arg(long, requires = "backup")]
         min_free: Option<String>,
-        /// Under `--backup`, purge the items cache every N items (defense-in-depth).
-        #[arg(long, default_value_t = 50)]
-        purge_every: usize,
+        /// Purge the items cache every N items (default 50). Requires `--backup`
+        /// (the purge only matters when backups accumulate).
+        #[arg(long, requires = "backup")]
+        purge_every: Option<usize>,
         #[command(flatten)]
         write: WriteOpts,
     },
