@@ -35,6 +35,13 @@ Implemented today:
 - `rabsody items delete|batch-delete` - remove items: soft (database record only)
   by default, `--hard` also deletes files from disk. Dry-run unless `--apply`; an
   apply-mode `--hard` delete prints every target then requires typing `DELETE`.
+- `rabsody items embed-metadata|batch-embed-metadata` - embed the item's metadata
+  into its audio file(s). Backups are **off by default** (the per-item backups
+  are what filled the disk in the 2026-06-21 incident); opt in with `--backup`.
+  `batch-embed-metadata` serializes one item at a time (waiting for each server
+  task to drain), and under `--backup` enforces a disk-headroom guard against
+  `[cache].dataPath` (`--min-free`, default 2GiB) plus a periodic items-cache
+  purge (`--purge-every`, default 50). Dry-run unless `--apply`.
 - `rabsody metadata search|providers|covers` - provider metadata lookups (JSON).
 - `rabsody search <query>` - search within the default library (JSON).
 - `rabsody tasks list [--wait]` - list server tasks; `--wait` blocks until the queue

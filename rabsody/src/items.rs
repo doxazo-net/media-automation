@@ -129,6 +129,41 @@ pub enum ItemsCmd {
         #[command(flatten)]
         write: WriteOpts,
     },
+    /// Embed the item's metadata into its audio file(s) (dry-run unless `--apply`).
+    EmbedMetadata {
+        /// Library item ID.
+        id: String,
+        /// Back up the original file(s) first (ABS `?backup=1`). Off by default -
+        /// per-item backups are what filled the disk in the 2026-06-21 incident.
+        #[arg(long)]
+        backup: bool,
+        /// Re-embed chapters (ABS `forceEmbedChapters=1`).
+        #[arg(long)]
+        force_chapters: bool,
+        /// Perform the embed (otherwise dry-run preview only).
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Embed metadata into many items, serialized with a disk-headroom guard.
+    BatchEmbedMetadata {
+        /// JSON file: array of item-ID strings (`-` for stdin). Combined with `--ids`.
+        #[arg(long)]
+        file: Option<String>,
+        /// Back up originals first (requires `[cache].dataPath` for the disk guard).
+        #[arg(long)]
+        backup: bool,
+        /// Re-embed chapters (ABS `forceEmbedChapters=1`).
+        #[arg(long)]
+        force_chapters: bool,
+        /// Abort if free space falls below this (e.g. `2GiB`); only with `--backup`.
+        #[arg(long)]
+        min_free: Option<String>,
+        /// Under `--backup`, purge the items cache every N items (defense-in-depth).
+        #[arg(long, default_value_t = 50)]
+        purge_every: usize,
+        #[command(flatten)]
+        write: WriteOpts,
+    },
 }
 
 pub fn run(cmd: ItemsCmd) -> Result<()> {
@@ -188,6 +223,27 @@ pub fn run(cmd: ItemsCmd) -> Result<()> {
         ItemsCmd::BatchUpdateProgress { file, write } => run_batch_update_progress(file, write),
         ItemsCmd::Delete { id, hard, apply } => run_delete(id, hard, apply),
         ItemsCmd::BatchDelete { file, hard, write } => run_batch_delete(file, hard, write),
+        ItemsCmd::EmbedMetadata {
+            id,
+            backup,
+            force_chapters,
+            apply,
+        } => crate::embed::run_embed(id, backup, force_chapters, apply),
+        ItemsCmd::BatchEmbedMetadata {
+            file,
+            backup,
+            force_chapters,
+            min_free,
+            purge_every,
+            write,
+        } => crate::embed::run_batch_embed(
+            file,
+            backup,
+            force_chapters,
+            min_free,
+            purge_every,
+            write,
+        ),
     }
 }
 
@@ -461,7 +517,7 @@ fn raw_id(item: &serde_json::Value) -> Option<&str> {
 }
 
 /// `media.metadata.title` of a raw item JSON value, if present.
-fn raw_title(item: &serde_json::Value) -> Option<&str> {
+pub(crate) fn raw_title(item: &serde_json::Value) -> Option<&str> {
     item.get("media")?.get("metadata")?.get("title")?.as_str()
 }
 
@@ -486,7 +542,7 @@ fn is_delete_confirmation(input: &str) -> bool {
 
 /// Union `--file` IDs with `--ids`, preserving first-seen order, dropping blanks
 /// and duplicates, then truncating to `limit` (the shared `--limit` flag).
-fn collect_delete_ids(
+pub(crate) fn collect_delete_ids(
     file_ids: Vec<String>,
     flag_ids: &[String],
     limit: Option<usize>,
@@ -506,7 +562,7 @@ fn collect_delete_ids(
 }
 
 /// Parse the `--file` input for batch-delete: a JSON array of ID strings.
-fn parse_id_file(raw: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_id_file(raw: &str) -> Result<Vec<String>> {
     serde_json::from_str(raw).map_err(|e| {
         Error::Config(format!(
             "parsing ID file (expected a JSON array of strings): {e}"
@@ -552,7 +608,7 @@ struct ProgressEntry {
 }
 
 /// Read patch input from `--data`, or from a `--file` path (`-` = stdin).
-fn read_input(data: Option<String>, file: Option<String>) -> Result<String> {
+pub(crate) fn read_input(data: Option<String>, file: Option<String>) -> Result<String> {
     if let Some(data) = data {
         return Ok(data);
     }

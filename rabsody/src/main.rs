@@ -9,6 +9,7 @@ mod api;
 mod auth;
 mod cache;
 mod config;
+mod embed;
 mod error;
 mod harness;
 mod items;

@@ -798,6 +798,22 @@ impl Client {
         self.post_ok("/api/cache/items/purge", &serde_json::json!({}))
     }
 
+    /// `POST /api/tools/item/{id}/embed-metadata` - embed metadata into the
+    /// item's audio file(s). Async on the server (tracked via `GET /api/tasks`);
+    /// the POST returns when the task is queued. `backup` toggles ABS's
+    /// per-file backup of the original (`?backup=1`); the server defaults to no
+    /// backup, and so does RABSody - the per-item backups are what filled the
+    /// disk in the 2026-06-21 incident. `force_chapters` re-embeds chapters.
+    pub fn embed_metadata(&self, item_id: &str, backup: bool, force_chapters: bool) -> Result<()> {
+        let path = format!(
+            "/api/tools/item/{}/embed-metadata?backup={}&forceEmbedChapters={}",
+            encode_segment(item_id),
+            if backup { 1 } else { 0 },
+            if force_chapters { 1 } else { 0 },
+        );
+        self.post_ok(&path, &serde_json::json!({}))
+    }
+
     /// PATCH that only checks status (no JSON decode) - for endpoints that reply
     /// with a non-JSON body like the plain `OK` ABS returns for some writes.
     fn patch_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
@@ -1245,5 +1261,30 @@ mod tests {
             Err(Error::Http { status, .. }) => assert_eq!(status, 500),
             other => panic!("expected Http 500, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn embed_metadata_builds_path_and_query() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port)
+            .embed_metadata("li_1", false, false)
+            .unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        // Default (no backup): backup=0; chapters off.
+        assert_eq!(
+            line,
+            "POST /api/tools/item/li_1/embed-metadata?backup=0&forceEmbedChapters=0 HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn embed_metadata_sets_backup_and_chapters_flags() {
+        let (port, rx) = serve_once_capture(OK_EMPTY);
+        client_for(port).embed_metadata("li_1", true, true).unwrap();
+        let line = rx.recv().unwrap().lines().next().unwrap().to_string();
+        assert_eq!(
+            line,
+            "POST /api/tools/item/li_1/embed-metadata?backup=1&forceEmbedChapters=1 HTTP/1.1"
+        );
     }
 }
