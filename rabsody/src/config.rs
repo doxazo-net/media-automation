@@ -2,7 +2,7 @@
 //!
 //! Two on-disk sources, native preferred:
 //!   1. Native RABSody config at `<config-dir>/rabsody/config.toml` (written by
-//!      `rabs login` / `rabs config set`).
+//!      `rabsody login` / `rabsody config set`).
 //!   2. abs-cli's `~/.abs-cli/config.json` - the fallback "until native auth
 //!      lands" (reads keep working off it).
 //!

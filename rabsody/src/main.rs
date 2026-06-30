@@ -24,7 +24,7 @@ use tasks::TasksCmd;
 
 #[derive(Parser)]
 #[command(
-    name = "rabs",
+    name = "rabsody",
     version = env!("RABSODY_VERSION"),
     about = "RABSody - Audiobookshelf curation in Rust"
 )]
@@ -96,7 +96,7 @@ enum Planned {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     if let Err(e) = run() {
-        eprintln!("rabs: {e}");
+        eprintln!("rabsody: {e}");
         std::process::exit(1);
     }
 }

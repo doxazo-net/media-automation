@@ -1,4 +1,4 @@
-//! `rabs login` and `rabs config get|set` - native credential management.
+//! `rabsody login` and `rabsody config get|set` - native credential management.
 //!
 //! `login` authenticates against the ABS server and writes a native TOML config;
 //! `config get|set` inspects/edits it. Until a native config exists, reads keep
@@ -29,11 +29,11 @@ pub enum ConfigKey {
     Token,
 }
 
-/// `rabs login` - authenticate and write the native config.
+/// `rabsody login` - authenticate and write the native config.
 pub fn login(server: Option<String>, username: String, password: Option<String>) -> Result<()> {
     let server = match server {
         Some(server) => server,
-        // Fall back to the server already in config so `rabs login --username x`
+        // Fall back to the server already in config so `rabsody login --username x`
         // works once a server is known. Preserve the load error so a genuine
         // unreadable/malformed config is distinguishable from "no config yet".
         None => Credentials::load().map(|c| c.config.server).map_err(|e| {
@@ -60,7 +60,7 @@ pub fn login(server: Option<String>, username: String, password: Option<String>)
     Ok(())
 }
 
-/// `rabs config get|set`.
+/// `rabsody config get|set`.
 pub fn config(cmd: ConfigCmd) -> Result<()> {
     match cmd {
         ConfigCmd::Get => {

@@ -1,4 +1,4 @@
-//! `rabs metadata` - provider metadata: search / providers / covers.
+//! `rabsody metadata` - provider metadata: search / providers / covers.
 //!
 //! Output is pretty JSON to stdout (raw API data for piping/scripting).
 

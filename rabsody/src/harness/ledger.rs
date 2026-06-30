@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn append_then_read_all_preserves_order() {
-        let path = std::env::temp_dir().join(format!("rabs-ldg-{}.jsonl", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rabsody-ldg-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let ledger = Ledger::with_path(path.clone());
 
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn read_all_empty_when_absent() {
         let ledger = Ledger::with_path(
-            std::env::temp_dir().join(format!("rabs-ldg-none-{}.jsonl", std::process::id())),
+            std::env::temp_dir().join(format!("rabsody-ldg-none-{}.jsonl", std::process::id())),
         );
         assert!(ledger.read_all().unwrap().is_empty());
     }

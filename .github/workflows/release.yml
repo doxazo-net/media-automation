@@ -29,11 +29,11 @@ jobs:
         run: |
           ref="$REF_NAME"
           # `bin` is the crate directory; `binname` is the built executable
-          # (rabsody's binary is `rabs`). `version` is the tag with its
-          # binary-namespaced prefix stripped.
+          # (for both crates the executable matches the crate name). `version`
+          # is the tag with its binary-namespaced prefix stripped.
           case "$ref" in
-            smpr-v*)    bin=smpr;    binname=smpr; version="${ref#smpr-v}" ;;
-            rabsody-v*) bin=rabsody; binname=rabs; version="${ref#rabsody-v}" ;;
+            smpr-v*)    bin=smpr;    binname=smpr;    version="${ref#smpr-v}" ;;
+            rabsody-v*) bin=rabsody; binname=rabsody; version="${ref#rabsody-v}" ;;
             *) echo "::error::unrecognized release tag '$ref' (expected smpr-v* or rabsody-v*)"; exit 1 ;;
           esac
           if [ -z "$version" ]; then

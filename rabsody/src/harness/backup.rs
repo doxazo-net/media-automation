@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn save_list_get_round_trip() {
-        let dir = std::env::temp_dir().join(format!("rabs-bk-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-bk-{}", std::process::id()));
         let store = BackupStore::with_dir(dir.clone());
         let item = serde_json::json!({"id": "li_1", "media": {"metadata": {"title": "T"}}});
         let path = store
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn repeated_snapshots_do_not_overwrite() {
-        let dir = std::env::temp_dir().join(format!("rabs-bk-dup-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-bk-dup-{}", std::process::id()));
         let store = BackupStore::with_dir(dir.clone());
         let a = serde_json::json!({"v": 1});
         let b = serde_json::json!({"v": 2});
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn concurrent_snapshots_never_clobber() {
         use std::sync::Arc;
-        let dir = std::env::temp_dir().join(format!("rabs-bk-conc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-bk-conc-{}", std::process::id()));
         let store = Arc::new(BackupStore::with_dir(dir.clone()));
         let handles: Vec<_> = (0..8)
             .map(|i| {
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn list_backups_empty_when_dir_absent() {
         let store = BackupStore::with_dir(
-            std::env::temp_dir().join(format!("rabs-bk-none-{}", std::process::id())),
+            std::env::temp_dir().join(format!("rabsody-bk-none-{}", std::process::id())),
         );
         assert!(store.list_backups().unwrap().is_empty());
     }

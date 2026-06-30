@@ -1,4 +1,4 @@
-//! `rabs items` - read and write library items.
+//! `rabsody items` - read and write library items.
 //!
 //! Reads (`list`/`get`/`batch-get`) print pretty JSON. Writes (`update`/
 //! `batch-update`/`batch-update-progress`) go through the shared write harness:
@@ -158,7 +158,7 @@ pub fn run(cmd: ItemsCmd) -> Result<()> {
     }
 }
 
-/// `rabs items update` - single-item metadata/tags write.
+/// `rabsody items update` - single-item metadata/tags write.
 fn run_update(
     id: String,
     data: Option<String>,
@@ -201,7 +201,7 @@ fn run_update(
     Ok(())
 }
 
-/// `rabs items batch-update` - atomic multi-item metadata/tags write.
+/// `rabsody items batch-update` - atomic multi-item metadata/tags write.
 fn run_batch_update(
     file: String,
     replace_tags: bool,
@@ -268,7 +268,7 @@ fn run_batch_update(
     Ok(())
 }
 
-/// `rabs items batch-update-progress` - atomic multi-item progress write.
+/// `rabsody items batch-update-progress` - atomic multi-item progress write.
 fn run_batch_update_progress(file: String, write: WriteOpts) -> Result<()> {
     let raw = read_input(None, Some(file))?;
     let entries: Vec<ProgressEntry> = serde_json::from_str(&raw)

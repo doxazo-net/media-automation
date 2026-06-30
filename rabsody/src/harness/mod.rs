@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn dry_run_does_not_invoke_write_or_persist() {
-        let dir = std::env::temp_dir().join(format!("rabs-h-dry-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-h-dry-{}", std::process::id()));
         let ctx = temp_ctx(false, &dir);
         let called = Cell::new(false);
         let outcome = ctx
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn apply_runs_write_backs_up_and_ledgers() {
-        let dir = std::env::temp_dir().join(format!("rabs-h-apply-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-h-apply-{}", std::process::id()));
         let ctx = temp_ctx(true, &dir);
         let called = Cell::new(false);
         let outcome = ctx
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn apply_records_write_error_in_ledger() {
-        let dir = std::env::temp_dir().join(format!("rabs-h-err-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-h-err-{}", std::process::id()));
         let ctx = temp_ctx(true, &dir);
         let outcome = ctx
             .execute(&req("7"), || {
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn apply_propagates_auth_error_for_fail_fast() {
-        let dir = std::env::temp_dir().join(format!("rabs-h-auth-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rabsody-h-auth-{}", std::process::id()));
         let ctx = temp_ctx(true, &dir);
         // A 401/403 must surface as Err (so the CLI exits non-zero), not as an
         // Ok(WriteOutcome::Error) that the caller could print and still exit 0.

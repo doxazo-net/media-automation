@@ -1,7 +1,7 @@
 # RABSody
 
 A Rust CLI for curating an [Audiobookshelf](https://www.audiobookshelf.org/) (ABS)
-library. The name is **R**ust + **ABS** + rhaps-**ody**; the binary is `rabs`.
+library. The name is **R**ust + **ABS** + rhaps-**ody**; the binary is `rabsody`.
 
 RABSody talks to the ABS HTTP API directly. It is the eventual native replacement
 for shelling out to the third-party `abs-cli`, plus a home for higher-level
@@ -18,17 +18,17 @@ harness (dry-run + backup + ledger) and per-command safety gates exist.
 
 Implemented today:
 
-- `rabs login` - authenticate against the ABS server (`POST /login`) and write a
+- `rabsody login` - authenticate against the ABS server (`POST /login`) and write a
   native config; expired access tokens transparently refresh (`POST /auth/refresh`).
-- `rabs config get|set` - inspect/edit the native config (server, library, token).
-- `rabs doctor` - verify connectivity + credentials against the ABS server.
-- `rabs report stats` - library summary (item count, ASIN/ISBN coverage, abridged
+- `rabsody config get|set` - inspect/edit the native config (server, library, token).
+- `rabsody doctor` - verify connectivity + credentials against the ABS server.
+- `rabsody report stats` - library summary (item count, ASIN/ISBN coverage, abridged
   count, distinct genres/tags/narrators, top genres/tags).
-- `rabs items list|get|batch-get` - read library items (filter/sort/paginate,
+- `rabsody items list|get|batch-get` - read library items (filter/sort/paginate,
   `--expanded` for audio files + chapters); JSON output.
-- `rabs metadata search|providers|covers` - provider metadata lookups (JSON).
-- `rabs search <query>` - search within the default library (JSON).
-- `rabs tasks list [--wait]` - list server tasks; `--wait` blocks until the queue
+- `rabsody metadata search|providers|covers` - provider metadata lookups (JSON).
+- `rabsody search <query>` - search within the default library (JSON).
+- `rabsody tasks list [--wait]` - list server tasks; `--wait` blocks until the queue
   drains (the reusable poller future bulk ops will serialize on).
 
 Planned command families (stubbed): `asin`, `chapters`, `fields`.
@@ -36,7 +36,7 @@ See the **"RABSody: abs-cli parity"** milestone / the parity epic for the roadma
 
 ## Configuration
 
-`rabs login` writes a native TOML config at `<config-dir>/rabsody/config.toml`
+`rabsody login` writes a native TOML config at `<config-dir>/rabsody/config.toml`
 (e.g. `~/.config/rabsody/config.toml`) holding `server`, `accessToken`,
 `refreshToken`, and `defaultLibrary`. An expired access token is refreshed
 transparently on the next request and the rotated tokens are persisted.

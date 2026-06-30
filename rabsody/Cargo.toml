@@ -9,7 +9,7 @@ license = "BSD-2-Clause"
 rust-version = "1.94"
 
 [[bin]]
-name = "rabs"
+name = "rabsody"
 path = "src/main.rs"
 
 [dependencies]

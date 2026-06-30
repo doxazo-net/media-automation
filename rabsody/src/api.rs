@@ -715,7 +715,7 @@ impl Client {
 }
 
 /// `POST /login` with username/password; returns the resulting [`Credentials`]
-/// (targeting the native config path, so `rabs login` writes a native TOML).
+/// (targeting the native config path, so `rabsody login` writes a native TOML).
 pub fn login(server: &str, username: &str, password: &str) -> Result<Credentials> {
     let server = server.trim_end_matches('/').to_string();
     let url = format!("{server}/login");
@@ -759,7 +759,9 @@ pub fn connect() -> Result<(Client, String)> {
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
         .ok_or_else(|| {
-            Error::Config("no default library set; run `rabs config set library <id>`".to_string())
+            Error::Config(
+                "no default library set; run `rabsody config set library <id>`".to_string(),
+            )
         })?;
     Ok((Client::new(&creds), library))
 }

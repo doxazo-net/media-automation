@@ -1,4 +1,4 @@
-//! `rabs tasks` - list server tasks, plus the reusable [`TaskPoller`].
+//! `rabsody tasks` - list server tasks, plus the reusable [`TaskPoller`].
 //!
 //! `TaskPoller` is a shared primitive: future bulk operations (embed, encode-m4b)
 //! import it to serialize work by waiting until the server's task queue drains.
