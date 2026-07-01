@@ -166,6 +166,9 @@ pub enum ItemsCmd {
         #[command(flatten)]
         write: WriteOpts,
     },
+    /// Encode item(s) to m4b: `start` / `cancel` (serialized, disk-checked).
+    #[command(subcommand)]
+    EncodeM4b(crate::encode::EncodeM4bCmd),
 }
 
 pub fn run(cmd: ItemsCmd) -> Result<()> {
@@ -246,6 +249,7 @@ pub fn run(cmd: ItemsCmd) -> Result<()> {
             purge_every,
             write,
         ),
+        ItemsCmd::EncodeM4b(cmd) => crate::encode::run(cmd),
     }
 }
 

@@ -10,6 +10,7 @@ mod auth;
 mod cache;
 mod config;
 mod embed;
+mod encode;
 mod error;
 mod harness;
 mod items;

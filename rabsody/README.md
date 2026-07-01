@@ -42,6 +42,13 @@ Implemented today:
   task to drain), and under `--backup` enforces a disk-headroom guard against
   `[cache].dataPath` (`--min-free`, default 2GiB) plus a periodic items-cache
   purge (`--purge-every`, default 50). Dry-run unless `--apply`.
+- `rabsody items encode-m4b start|cancel` - drive ABS's m4b encode. Each encode
+  writes a full new copy, so `start` does a pre-flight free-space check sized to
+  the source (source bytes + `--min-free` headroom, default 1GiB) against
+  `[cache].dataPath`, runs strictly serialized (one item at a time via the task
+  poller), and resumes by skipping items already encoded in the ledger
+  (`--no-resume` to force). `--bitrate`/`--codec` override the server's
+  source-aware defaults (m4a remux / mp3 transcode). Dry-run unless `--apply`.
 - `rabsody metadata search|providers|covers` - provider metadata lookups (JSON).
 - `rabsody search <query>` - search within the default library (JSON).
 - `rabsody tasks list [--wait]` - list server tasks; `--wait` blocks until the queue
