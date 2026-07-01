@@ -102,7 +102,7 @@ fn run_start(
     let done = if no_resume {
         std::collections::HashSet::new()
     } else {
-        completed_encodes(&Ledger::resolve()?.read_all()?)
+        completed_encodes(&Ledger::resolve()?.read_all()?, client.server())
     };
 
     let ctx = WriteContext::new(write.apply)?;
@@ -116,9 +116,21 @@ fn run_start(
         let source = source_size(&item);
 
         // Pre-flight: each encode writes a full copy, so require source + headroom.
-        if write.apply
-            && let Some(path) = data_path.as_ref()
-        {
+        // In apply mode the check is mandatory and fails closed: without a
+        // configured data path or a known source size we cannot guarantee the
+        // headroom, so refuse rather than silently skip the guard.
+        if write.apply {
+            if source == 0 {
+                return Err(Error::Config(format!(
+                    "cannot determine source size for {id}; refusing to encode without a source-sized disk check"
+                )));
+            }
+            let path = data_path.as_ref().ok_or_else(|| {
+                Error::Config(
+                    "items encode-m4b --apply requires [cache].dataPath for the disk preflight"
+                        .to_string(),
+                )
+            })?;
             let space = cache::free_space(path)?;
             let required = source.saturating_add(headroom);
             if space.available < required {
@@ -138,7 +150,11 @@ fn run_start(
             item_id: id.clone(),
             label: encode_label(&item, source),
             operation: "encode-m4b".to_string(),
-            before: serde_json::to_value(&item).unwrap_or(serde_json::Value::Null),
+            before: serde_json::to_value(&item).map_err(|e| {
+                Error::Parse(format!(
+                    "encode-m4b snapshot serialization failed for {id}: {e}"
+                ))
+            })?,
             after: serde_json::Value::Null,
         };
         let outcome = ctx.execute(&req, || {
@@ -275,11 +291,17 @@ fn encode_label(item: &Item, source: u64) -> String {
     }
 }
 
-/// Item IDs recorded as a successfully `applied` `encode-m4b` write in the ledger.
-fn completed_encodes(records: &[crate::harness::WriteRecord]) -> std::collections::HashSet<String> {
+/// Item IDs recorded as a successfully `applied` `encode-m4b` write **on the
+/// given server** in the ledger. Scoping by server prevents a record from one
+/// server from suppressing an unencoded item when the same ledger is reused
+/// against a different server.
+fn completed_encodes(
+    records: &[crate::harness::WriteRecord],
+    server: &str,
+) -> std::collections::HashSet<String> {
     records
         .iter()
-        .filter(|r| r.operation == "encode-m4b" && r.outcome == "applied")
+        .filter(|r| r.server == server && r.operation == "encode-m4b" && r.outcome == "applied")
         .map(|r| r.item_id.clone())
         .collect()
 }
@@ -367,9 +389,28 @@ mod tests {
             rec("c", "embed", "applied"),          // wrong op -> not done
             rec("d", "encode-m4b", "applied"),
         ];
-        let done = completed_encodes(&records);
+        let done = completed_encodes(&records, "s");
         assert!(done.contains("a") && done.contains("d"));
         assert!(!done.contains("b") && !done.contains("c"));
         assert_eq!(done.len(), 2);
+    }
+
+    #[test]
+    fn completed_encodes_scopes_to_the_active_server() {
+        let rec = |server: &str, id: &str| WriteRecord {
+            ts: 0,
+            server: server.into(),
+            item_id: id.into(),
+            operation: "encode-m4b".into(),
+            before: serde_json::Value::Null,
+            after: serde_json::Value::Null,
+            outcome: "applied".into(),
+        };
+        let records = vec![rec("home", "a"), rec("other", "b")];
+        // Resuming against "home" must not treat "b" (encoded on "other") as done.
+        let done = completed_encodes(&records, "home");
+        assert!(done.contains("a"));
+        assert!(!done.contains("b"));
+        assert_eq!(done.len(), 1);
     }
 }
