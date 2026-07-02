@@ -359,10 +359,10 @@ impl AppState {
 
     pub fn set_overwrite(&mut self, value: bool) {
         self.preferences_state.overwrite = value;
-        let general = self
-            .config
-            .general
-            .get_or_insert(RawGeneral { overwrite: None });
+        let general = self.config.general.get_or_insert(RawGeneral {
+            overwrite: None,
+            clean_rating: None,
+        });
         general.overwrite = Some(value);
         self.mark_dirty();
     }

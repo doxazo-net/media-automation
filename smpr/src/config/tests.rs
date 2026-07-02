@@ -475,6 +475,37 @@ overwrite = false
     assert!(cfg.overwrite, "CLI true should override TOML false");
 }
 
+fn load_general(toml_content: &str) -> Config {
+    let mut toml_file = NamedTempFile::new().unwrap();
+    toml_file.write_all(toml_content.as_bytes()).unwrap();
+    let cli = CliInput {
+        config_path: Some(toml_file.path().to_path_buf()),
+        server_url: Some("http://localhost:8096".to_string()),
+        api_key: Some("key".to_string()),
+        ..Default::default()
+    };
+    Config::load_from_paths(&cli).expect("should load")
+}
+
+#[test]
+fn clean_rating_defaults_to_g_when_omitted() {
+    let cfg = load_general("[general]\noverwrite = true\n");
+    assert_eq!(cfg.clean_rating.as_deref(), Some("G"));
+}
+
+#[test]
+fn clean_rating_empty_string_opts_out() {
+    // Explicit empty string => None (legacy clear-on-clean behavior).
+    let cfg = load_general("[general]\nclean_rating = \"\"\n");
+    assert_eq!(cfg.clean_rating, None);
+}
+
+#[test]
+fn clean_rating_custom_value_respected() {
+    let cfg = load_general("[general]\nclean_rating = \"TV-Y\"\n");
+    assert_eq!(cfg.clean_rating.as_deref(), Some("TV-Y"));
+}
+
 #[test]
 fn overwrite_default_when_toml_omits() {
     let toml_content = "";

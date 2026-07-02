@@ -296,7 +296,31 @@ fn rate_item(
             });
         }
 
-        // Clean lyrics — clear existing rating if overwrite enabled
+        // Clean lyrics. By default set the configured clean rating (e.g. "G")
+        // so the track stays playable under a parental gate that blocks unrated
+        // items; if clean_rating is None (opt-out) fall back to clearing.
+        if let Some(clean) = config.clean_rating.as_deref() {
+            let act = action::decide_rating_action(clean, prev, config.overwrite, config.dry_run);
+            let act = if matches!(act, RatingAction::Set) {
+                action::apply_rating(client, &view.id, clean, label)?
+            } else {
+                act
+            };
+            return Ok(ItemResult {
+                item_id: view.id.clone(),
+                path: view.path.clone(),
+                artist: view.album_artist.clone(),
+                album: view.album.clone(),
+                tier: Some(clean.to_string()),
+                matched_words: vec![],
+                previous_rating: prev.map(String::from),
+                action: act,
+                source: Source::Lyrics,
+                has_lyrics: true,
+                server_name: server_name.to_string(),
+            });
+        }
+        // Opt-out: clear existing rating if overwrite enabled.
         let act = action::decide_clear_action(prev, config.overwrite, config.dry_run);
         let act = if matches!(act, RatingAction::Cleared) {
             action::apply_rating(client, &view.id, "", label)?
@@ -535,8 +559,10 @@ impl SummaryCounts {
                     _ => {}
                 }
             }
-            // Clean = lyrics were evaluated but carried no explicit content.
-            if r.has_lyrics && r.tier.is_none() {
+            // Clean = lyrics were evaluated but carried no explicit content
+            // (tier not R/PG-13). Covers both representations: clean->cleared
+            // (tier None) and clean->G (tier Some("G"), the default policy).
+            if r.has_lyrics && !matches!(r.tier.as_deref(), Some("R") | Some("PG-13")) {
                 c.clean += 1;
             }
             // Action counts by source

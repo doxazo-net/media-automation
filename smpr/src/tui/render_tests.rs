@@ -21,6 +21,7 @@ fn sample_config() -> RawConfig {
         detection: Some(RawDetection::default()),
         general: Some(RawGeneral {
             overwrite: Some(true),
+            clean_rating: None,
         }),
         report: None,
     }

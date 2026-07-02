@@ -20,6 +20,7 @@ fn save_and_reload_config_roundtrip() {
         detection: None,
         general: Some(RawGeneral {
             overwrite: Some(true),
+            clean_rating: None,
         }),
         report: None,
     };

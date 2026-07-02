@@ -146,6 +146,7 @@ fn build_raw_config(
     } else {
         Some(RawGeneral {
             overwrite: Some(prefs.overwrite),
+            clean_rating: None,
         })
     };
 

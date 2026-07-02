@@ -65,6 +65,11 @@ pub struct RawGenres {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RawGeneral {
     pub overwrite: Option<bool>,
+    /// Rating applied to tracks whose lyrics are clean (no explicit content).
+    /// Defaults to "G" so clean tracks stay playable under a parental gate that
+    /// blocks unrated items. Set to "" to instead clear the rating (the legacy
+    /// behavior) and leave clean tracks unrated.
+    pub clean_rating: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -83,6 +88,9 @@ pub struct Config {
     pub servers: Vec<ServerConfig>,
     pub detection: DetectionConfig,
     pub overwrite: bool,
+    /// Rating to apply to clean-lyric tracks. `Some("G")` by default; `None`
+    /// (from an empty `clean_rating`) restores the legacy clear-on-clean behavior.
+    pub clean_rating: Option<String>,
     pub dry_run: bool,
     pub report_path: Option<PathBuf>,
     pub library_name: Option<String>,
@@ -380,6 +388,14 @@ impl Config {
                 .unwrap_or(true)
         });
 
+        // 6b. Resolve clean_rating: TOML > default ("G"). An explicitly empty
+        // string opts out (None = clear clean tracks, the legacy behavior).
+        let clean_rating = match raw.general.as_ref().and_then(|g| g.clean_rating.clone()) {
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(s),
+            None => Some("G".to_string()),
+        };
+
         // 7. Resolve report path: CLI > TOML > None
         let report_path = cli.report.as_ref().map(PathBuf::from).or_else(|| {
             raw.report
@@ -392,6 +408,7 @@ impl Config {
             servers,
             detection,
             overwrite,
+            clean_rating,
             dry_run: cli.dry_run,
             report_path,
             library_name: cli.library.clone(),

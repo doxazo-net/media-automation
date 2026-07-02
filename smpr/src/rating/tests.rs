@@ -633,6 +633,33 @@ fn force_rated_items_excluded_from_lyrics_tier_counts() {
     assert_eq!(counts.ratings_set, 1); // still counted as a rating set
 }
 
+#[test]
+fn clean_lyrics_rated_g_counts_as_clean_not_explicit() {
+    // With clean_rating="G", a clean-lyric track carries tier=Some("G"),
+    // source=Lyrics, has_lyrics=true. It must count as Clean + lyrics-evaluated
+    // (not R/PG-13), and as a rating set.
+    let results = vec![ItemResult {
+        item_id: "c1".into(),
+        has_lyrics: true,
+        path: None,
+        artist: None,
+        album: None,
+        tier: Some("G".into()),
+        matched_words: vec![],
+        previous_rating: None,
+        action: RatingAction::Set,
+        source: Source::Lyrics,
+        server_name: "s".into(),
+    }];
+    let c = SummaryCounts::from_results(&results);
+    assert_eq!(c.lyrics_evaluated, 1);
+    assert_eq!(c.clean, 1); // clean despite tier=G
+    assert_eq!(c.r_rated, 0);
+    assert_eq!(c.pg13, 0);
+    assert_eq!(c.ratings_set, 1); // source=Lyrics Set -> ratings_set (not g_genre_set)
+    assert_eq!(c.g_genre_set, 0);
+}
+
 /// Integration tests — UAT servers only. Gated behind SMPR_UAT_TEST=1.
 /// All tests are READ-ONLY (dry-run). No mutations to UAT data.
 #[cfg(test)]
@@ -671,6 +698,7 @@ mod integration {
                 deny_genres: vec![],
             },
             overwrite: true,
+            clean_rating: Some("G".into()),
             dry_run: true,
             report_path: None,
             library_name: Some("Music".into()),

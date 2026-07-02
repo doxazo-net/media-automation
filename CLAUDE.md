@@ -93,6 +93,7 @@ Clap-derived parser with four subcommands:
 4. **Server resolution** (`resolve_servers`): `--server-url`+`--api-key` (one-off) > TOML `[servers.*]` sections. API keys from env vars as `{LABEL_UPPER}_API_KEY` (hyphens replaced with underscores). `--server` flag filters to named servers.
 5. **Detection**: TOML `[detection.r]`, `[detection.pg13]`, `[detection.ignore]`, `[detection.g_genres]`, `[detection.deny_genres]` > hardcoded defaults in `config/defaults.rs`. `[detection.deny_genres]` (default empty) vetoes the genre-G fallback when a track carries one of its genres even if a `g_genres` entry also matches (e.g. a film OST tagged both `Soundtrack` and `Classical`); such tracks are left unrated and reported with action `review`.
 6. **Overwrite**: CLI flag > TOML `[general].overwrite` > default `true`.
+6b. **Clean rating**: TOML `[general].clean_rating` > default `"G"`. The rating applied to clean-lyric tracks (no explicit content) so they stay playable under a parental gate that blocks unrated items. An explicit empty string (`clean_rating = ""`) opts out and restores the legacy behavior (clear the rating, leaving clean tracks unrated).
 7. **Report path**: CLI `--report` > TOML `[report].output_path` > None.
 
 Key types: `RawConfig` (serde TOML shape) vs `Config` (resolved, validated). `CliInput` is a plain struct that decouples config loading from clap.
@@ -137,7 +138,7 @@ Lyrics fetch (Emby): `find_emby_lyrics_stream` selects an external subtitle stre
 
 All three workflows follow the same pattern: resolve library scope → prefetch items → filter by location → process each item → return `Vec<ItemResult>`.
 
-- **`rate_workflow`**: for each item: check config-level `force_rating` (unless `--ignore-forced`) → fetch lyrics → `classify_lyrics` → set rating or clear if clean. No-lyrics items fall through to genre allow-list check (`match_g_genre → "G"`).
+- **`rate_workflow`**: for each item: check config-level `force_rating` (unless `--ignore-forced`) → fetch lyrics → `classify_lyrics` → set R/PG-13 on explicit content, else set `[general].clean_rating` (default `"G"`) on clean tracks (or clear them when `clean_rating` is empty). No-lyrics items fall through to genre allow-list check (`match_g_genre → "G"`).
 - **`force_workflow`**: set a fixed rating on all items in scope. No lyrics evaluation.
 - **`reset_workflow`**: clear `OfficialRating` on all items in scope.
 
@@ -210,7 +211,8 @@ Server type is auto-detected; override with `type = "emby"` or `type = "jellyfin
 - Use `--env-file .env.prod` to target production credentials
 - Word lists, genre allow-list, and library force_rating rules go in `explicit_config.toml` (or platform config dir, e.g., `~/.config/smpr/config.toml` on Linux)
 - Only `.env.example` is committed; `.env` variants are gitignored. TOML configs are user-managed (wizard writes to the platform config dir, not the repo)
-- `overwrite` (default `true`): when true, `rate` re-evaluates all tracks including clearing ratings from clean tracks; when false, skips tracks with existing ratings (`--skip-existing`)
+- `overwrite` (default `true`): when true, `rate` re-evaluates all tracks including re-rating clean tracks to `clean_rating`; when false, skips tracks with existing ratings (`--skip-existing`)
+- `clean_rating` (default `"G"`): rating applied to clean-lyric tracks so they remain playable under a parental gate that blocks unrated Music; set `clean_rating = ""` to clear clean tracks instead (legacy behavior)
 - Precedence: CLI flags > env vars > `.env` file > TOML config > hardcoded defaults
 
 ## CI
