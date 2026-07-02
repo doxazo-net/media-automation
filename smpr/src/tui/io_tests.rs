@@ -23,6 +23,7 @@ fn save_and_reload_config_roundtrip() {
             clean_rating: None,
         }),
         report: None,
+        overrides: None,
     };
 
     let tmp = NamedTempFile::new().unwrap();

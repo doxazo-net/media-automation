@@ -16,6 +16,21 @@ pub struct RawConfig {
     pub detection: Option<RawDetection>,
     pub general: Option<RawGeneral>,
     pub report: Option<RawReport>,
+    /// Per-song rating overrides (`[[overrides]]` array-of-tables).
+    pub overrides: Option<Vec<RawOverride>>,
+}
+
+/// One `[[overrides]]` entry: force or exempt a track whose path matches `match`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RawOverride {
+    /// Case-insensitive, separator-normalized substring matched against the
+    /// item's reported path.
+    #[serde(rename = "match")]
+    pub match_key: Option<String>,
+    /// Force this rating (e.g. "G", "PG-13", "R"). Ignored when `skip` is true.
+    pub rating: Option<String>,
+    /// Leave the track's rating untouched (never rate it).
+    pub skip: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -97,6 +112,19 @@ pub struct Config {
     pub location_name: Option<String>,
     pub verbose: bool,
     pub ignore_forced: bool,
+    /// Per-song rating overrides, highest precedence (override > force > lyrics/genre).
+    pub overrides: Vec<OverrideRule>,
+}
+
+/// A resolved per-song override. `match_key` is pre-normalized (lowercased,
+/// forward-slash) so it compares directly against a normalized item path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverrideRule {
+    pub match_key: String,
+    /// The rating to force. `None` together with `skip == true` means "leave
+    /// this track's rating untouched".
+    pub rating: Option<String>,
+    pub skip: bool,
 }
 
 #[derive(Debug)]
@@ -404,6 +432,9 @@ impl Config {
                 .map(PathBuf::from)
         });
 
+        // 8. Resolve per-song overrides (TOML only).
+        let overrides = resolve_overrides(&raw);
+
         Ok(Config {
             servers,
             detection,
@@ -415,6 +446,7 @@ impl Config {
             location_name: cli.location.clone(),
             verbose: cli.verbose,
             ignore_forced: cli.ignore_forced,
+            overrides,
         })
     }
 }
@@ -547,6 +579,48 @@ fn resolve_libraries(raw_srv: &RawServerConfig) -> BTreeMap<String, LibraryConfi
 
 fn to_owned_vec(defaults: &[&str]) -> Vec<String> {
     defaults.iter().map(|s| s.to_string()).collect()
+}
+
+/// Resolve `[[overrides]]` into normalized [`OverrideRule`]s. Match-keys are
+/// normalized (lowercased, forward-slash) so they compare directly against a
+/// normalized item path. Entries with no `match`, or with neither a `rating`
+/// nor `skip = true`, are dropped with a warning (a no-op override is almost
+/// always a mistake).
+fn resolve_overrides(raw: &RawConfig) -> Vec<OverrideRule> {
+    let Some(raw_overrides) = &raw.overrides else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ov in raw_overrides {
+        let match_key = ov
+            .match_key
+            .as_deref()
+            .map(|m| crate::util::normalize_path(m.trim()))
+            .unwrap_or_default();
+        if match_key.is_empty() {
+            log::warn!("ignoring [[overrides]] entry with empty/missing `match`");
+            continue;
+        }
+        let skip = ov.skip.unwrap_or(false);
+        let rating = ov
+            .rating
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(String::from);
+        if !skip && rating.is_none() {
+            log::warn!(
+                "ignoring [[overrides]] entry match='{match_key}': needs a `rating` or `skip = true`"
+            );
+            continue;
+        }
+        out.push(OverrideRule {
+            match_key,
+            rating,
+            skip,
+        });
+    }
+    out
 }
 
 fn resolve_detection(raw: &RawConfig) -> DetectionConfig {

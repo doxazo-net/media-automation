@@ -60,6 +60,8 @@ pub enum Source {
     Force,
     /// Reset subcommand.
     Reset,
+    /// Per-song `[[overrides]]` entry (issue #236).
+    Override,
 }
 
 impl Source {
@@ -70,6 +72,7 @@ impl Source {
             Self::Genre => "genre",
             Self::Force => "force",
             Self::Reset => "reset",
+            Self::Override => "override",
         }
     }
 }
@@ -184,7 +187,29 @@ pub fn rate_workflow(
     server_config: &ServerConfig,
     engine: &DetectionEngine,
 ) -> Result<Vec<ItemResult>, RatingError> {
-    let lib_scope = resolve_library_scope(client, config)?;
+    // Discover libraries once when either scoping or per-item force resolution
+    // needs them. A full run with no scope flags and no configured force skips
+    // discovery entirely (unchanged fast path).
+    let need_scope = config.library_name.is_some() || config.location_name.is_some();
+    let want_force = !config.ignore_forced && server_has_force_config(server_config);
+    let libraries = if need_scope || want_force {
+        Some(client.discover_libraries()?)
+    } else {
+        None
+    };
+    let lib_scope = match libraries.as_deref() {
+        Some(libs) => scope::resolve_from_libraries(
+            libs,
+            config.library_name.as_deref(),
+            config.location_name.as_deref(),
+        )?,
+        None => LibraryScope {
+            parent_id: None,
+            location_path: None,
+            library_name: None,
+        },
+    };
+
     let include_media_sources = client.server_type() == &ServerType::Emby;
     let items =
         client.prefetch_audio_items(include_media_sources, lib_scope.parent_id.as_deref())?;
@@ -196,19 +221,27 @@ pub fn rate_workflow(
 
     log::info!("processing {} items for rate workflow", items.len());
 
-    // Check for config-level force_rating (unless --ignore-forced)
-    let force_rating = if config.ignore_forced {
-        None
-    } else {
-        scope::lookup_force_rating(
-            server_config,
-            lib_scope.library_name.as_deref(),
-            config.location_name.as_deref(),
-        )
+    // Per-item force-rating rules (issue #235): resolve each configured
+    // library/location force against the item's actual path so a full run honors
+    // the same forces a scoped run would.
+    let force_rules = match libraries.as_deref() {
+        Some(libs) if want_force => scope::build_force_rules(server_config, libs),
+        _ => Vec::new(),
     };
+
+    // Per-song overrides (issue #236): log each override's reach so a typo
+    // matching 0, or an over-broad key matching hundreds, is visible.
+    if !config.ignore_forced {
+        log_override_match_counts(&config.overrides, &items);
+    }
 
     let mut results = Vec::new();
     for (view, raw) in &items {
+        let force_rating = if config.ignore_forced {
+            None
+        } else {
+            scope::resolve_force_rating(&force_rules, view.path.as_deref())
+        };
         let result = rate_item(
             client,
             config,
@@ -223,6 +256,35 @@ pub fn rate_workflow(
     Ok(results)
 }
 
+/// True when the server has any library- or location-level `force_rating`
+/// configured, i.e. per-item force resolution is worth doing.
+fn server_has_force_config(server_config: &ServerConfig) -> bool {
+    server_config.libraries.values().any(|lib| {
+        lib.force_rating.is_some() || lib.locations.values().any(|loc| loc.force_rating.is_some())
+    })
+}
+
+/// Log how many items each override's match-key reaches (issue #236 diagnostic).
+fn log_override_match_counts(
+    overrides: &[crate::config::OverrideRule],
+    items: &[(AudioItemView, Value)],
+) {
+    for ov in overrides {
+        let n = items
+            .iter()
+            .filter(|(view, _)| scope::path_contains_key(view.path.as_deref(), &ov.match_key))
+            .count();
+        if n == 0 {
+            log::warn!(
+                "override match='{}' matched 0 items (typo, or wrong path separators?)",
+                ov.match_key
+            );
+        } else {
+            log::info!("override match='{}' matched {} item(s)", ov.match_key, n);
+        }
+    }
+}
+
 fn rate_item(
     client: &MediaServerClient,
     config: &Config,
@@ -234,6 +296,14 @@ fn rate_item(
 ) -> Result<ItemResult, RatingError> {
     let label = view.path.as_deref().unwrap_or(&view.id);
     let prev = view.official_rating.as_deref();
+
+    // Per-song override takes highest precedence (override > force > lyrics/genre),
+    // unless --ignore-forced suppresses all forced ratings.
+    if !config.ignore_forced
+        && let Some(ov) = scope::resolve_override(&config.overrides, view.path.as_deref())
+    {
+        return apply_override(client, config, view, ov, label, server_name);
+    }
 
     // Config force_rating takes priority (unless --ignore-forced)
     if let Some(forced) = force_rating {
@@ -394,6 +464,48 @@ fn rate_item(
         previous_rating: prev.map(String::from),
         action: RatingAction::Skipped,
         source: Source::Lyrics,
+        has_lyrics: false,
+        server_name: server_name.to_string(),
+    })
+}
+
+/// Apply a per-song override to an item (issue #236). `skip` leaves the rating
+/// untouched; otherwise force the override's rating (respecting overwrite/dry-run
+/// like any other set). Never fetches lyrics.
+fn apply_override(
+    client: &MediaServerClient,
+    config: &Config,
+    view: &AudioItemView,
+    ov: &crate::config::OverrideRule,
+    label: &str,
+    server_name: &str,
+) -> Result<ItemResult, RatingError> {
+    let prev = view.official_rating.as_deref();
+    let (tier, act) = if ov.skip {
+        (None, RatingAction::Skipped)
+    } else if let Some(rating) = ov.rating.as_deref() {
+        let act = action::decide_rating_action(rating, prev, config.overwrite, config.dry_run);
+        let act = if matches!(act, RatingAction::Set) {
+            action::apply_rating(client, &view.id, rating, label)?
+        } else {
+            act
+        };
+        (Some(rating.to_string()), act)
+    } else {
+        // Neither rating nor skip: resolve_overrides drops these, so this is
+        // unreachable in practice; treat as a no-op skip defensively.
+        (None, RatingAction::Skipped)
+    };
+    Ok(ItemResult {
+        item_id: view.id.clone(),
+        path: view.path.clone(),
+        artist: view.album_artist.clone(),
+        album: view.album.clone(),
+        tier,
+        matched_words: vec![],
+        previous_rating: prev.map(String::from),
+        action: act,
+        source: Source::Override,
         has_lyrics: false,
         server_name: server_name.to_string(),
     })

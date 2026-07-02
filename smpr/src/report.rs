@@ -24,6 +24,7 @@ fn write_report_inner(
         "artist",
         "album",
         "track",
+        "path",
         "tier",
         "matched_words",
         "previous_rating",
@@ -38,10 +39,18 @@ fn write_report_inner(
             .as_deref()
             .and_then(|p| p.rsplit(['/', '\\']).next())
             .unwrap_or("");
+        // Normalized match-key: the exact string a `[[overrides]]` `match`
+        // substring is compared against. Copy any portion into an override entry.
+        let path_key = r
+            .path
+            .as_deref()
+            .map(crate::util::normalize_path)
+            .unwrap_or_default();
         wtr.write_record([
             r.artist.as_deref().unwrap_or(""),
             r.album.as_deref().unwrap_or(""),
             track,
+            &path_key,
             r.tier.as_deref().unwrap_or(""),
             &r.matched_words.join("; "),
             r.previous_rating.as_deref().unwrap_or(""),

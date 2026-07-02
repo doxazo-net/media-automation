@@ -241,11 +241,12 @@ fn filter_location_fallback_still_empty_when_no_leaf_match() {
     assert!(filtered.is_empty());
 }
 
-// ── lookup_force_rating tests ───────────────────────────────────────
+// ── force-rating rule tests (issue #235) ────────────────────────────
 
-use crate::config::{LibraryConfig, LocationConfig, ServerConfig};
+use crate::config::{LibraryConfig, LocationConfig, OverrideRule, ServerConfig};
 use std::collections::BTreeMap;
 
+/// "Music" library force PG-13, with its "classical" location force G.
 fn server_with_force_ratings() -> ServerConfig {
     let mut locations = BTreeMap::new();
     locations.insert(
@@ -271,46 +272,263 @@ fn server_with_force_ratings() -> ServerConfig {
     }
 }
 
-#[test]
-fn force_rating_location_overrides_library() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, Some("Music"), Some("classical"));
-    assert_eq!(rating, Some("G"));
+/// VirtualFolders whose "Music" library spans Classical, Rock, and Music folders.
+fn force_libs() -> Vec<VirtualFolder> {
+    vec![music_lib(
+        "Music",
+        "lib1",
+        vec!["/share/Classical", "/share/Rock", "/share/Music"],
+    )]
 }
 
 #[test]
-fn force_rating_library_fallback() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, Some("Music"), Some("rock"));
-    assert_eq!(rating, Some("PG-13"));
+fn force_rule_location_overrides_library() {
+    // Classical folder: library (PG-13) and location (G) both match; location wins.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Classical/bach.flac")),
+        Some("G")
+    );
 }
 
 #[test]
-fn force_rating_library_only() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, Some("Music"), None);
-    assert_eq!(rating, Some("PG-13"));
+fn force_rule_library_fallback() {
+    // Rock folder: only the library-level force applies.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Rock/acdc.flac")),
+        Some("PG-13")
+    );
 }
 
 #[test]
-fn force_rating_no_library_match() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, Some("Audiobooks"), None);
-    assert_eq!(rating, None);
+fn force_rule_full_run_applies_by_path() {
+    // Acceptance (#235): with NO scope flags, an item is forced purely by its path.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Music/pop/song.flac")),
+        Some("PG-13")
+    );
 }
 
 #[test]
-fn force_rating_no_library_name() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, None, None);
-    assert_eq!(rating, None);
+fn force_rule_no_match_outside_library() {
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/other/place/x.flac")),
+        None
+    );
 }
 
 #[test]
-fn force_rating_case_insensitive() {
-    let cfg = server_with_force_ratings();
-    let rating = scope::lookup_force_rating(&cfg, Some("music"), Some("Classical"));
-    assert_eq!(rating, Some("G"));
+fn force_rule_no_path_is_none() {
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(scope::resolve_force_rating(&rules, None), None);
+}
+
+#[test]
+fn force_rule_case_insensitive() {
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/SHARE/Classical/BACH.flac")),
+        Some("G")
+    );
+}
+
+#[test]
+fn force_rule_mount_view_mismatch_leaf_fallback() {
+    // A UNC-indexed item shares no prefix with the posix location path; the
+    // bounded leaf-segment fallback still forces it (location beats library).
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some(r"\\outatime\Classical\Bach\air.flac")),
+        Some("G")
+    );
+}
+
+#[test]
+fn force_rule_leaf_does_not_beat_a_real_prefix_match() {
+    // CR #237: in an aligned-mount run, a folder literally named "Classical"
+    // inside the Music tree must NOT be forced by the classical *location* rule
+    // via its leaf just because location rules outrank library rules. Prefix
+    // matches are resolved first; the leaf phase only runs when none exist. So
+    // the decoy resolves to the library force (PG-13), not G.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Music/VA/Classical/decoy.flac")),
+        Some("PG-13")
+    );
+    // The genuine classical track (real prefix match) is still forced G.
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Classical/real.flac")),
+        Some("G")
+    );
+}
+
+#[test]
+fn force_rule_unconfigured_library_yields_nothing() {
+    // A configured library with no matching VirtualFolder produces no rules.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &[]);
+    assert!(rules.is_empty());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Classical/x.flac")),
+        None
+    );
+}
+
+// ── per-song override tests (issue #236) ────────────────────────────
+
+fn sample_overrides() -> Vec<OverrideRule> {
+    vec![
+        OverrideRule {
+            match_key: "artist/album".into(),
+            rating: Some("G".into()),
+            skip: false,
+        },
+        OverrideRule {
+            match_key: "artist/album/07. track".into(),
+            rating: None,
+            skip: true,
+        },
+    ]
+}
+
+#[test]
+fn override_album_wide_match() {
+    let ovs = sample_overrides();
+    let hit = scope::resolve_override(&ovs, Some("/music/Artist/Album/05. Song.flac")).unwrap();
+    assert_eq!(hit.rating.as_deref(), Some("G"));
+    assert!(!hit.skip);
+}
+
+#[test]
+fn override_longest_key_wins() {
+    // The single-track key is more specific than the album key, so it wins.
+    let ovs = sample_overrides();
+    let hit = scope::resolve_override(&ovs, Some("/music/Artist/Album/07. Track.flac")).unwrap();
+    assert!(hit.skip);
+}
+
+#[test]
+fn override_no_match() {
+    let ovs = sample_overrides();
+    assert!(scope::resolve_override(&ovs, Some("/music/Other/Thing/01. x.flac")).is_none());
+    assert!(scope::resolve_override(&ovs, None).is_none());
+}
+
+#[test]
+fn override_match_count_helper() {
+    assert!(scope::path_contains_key(
+        Some("/music/Artist/Album/05. Song.flac"),
+        "artist/album"
+    ));
+    assert!(!scope::path_contains_key(
+        Some("/music/Zzz/01. y.flac"),
+        "artist/album"
+    ));
+    assert!(!scope::path_contains_key(None, "artist/album"));
+}
+
+// ── override precedence through rate_item (issue #236) ───────────────
+
+use crate::config::{Config, DetectionConfig, ServerType};
+use crate::detection::DetectionEngine;
+use crate::server::MediaServerClient;
+
+fn override_test_config(overrides: Vec<OverrideRule>, dry_run: bool) -> Config {
+    Config {
+        servers: vec![],
+        detection: DetectionConfig {
+            r_stems: vec!["fuck".into()],
+            r_exact: vec![],
+            pg13_stems: vec![],
+            pg13_exact: vec![],
+            false_positives: vec![],
+            g_genres: vec![],
+            deny_genres: vec![],
+        },
+        overwrite: true,
+        clean_rating: Some("G".into()),
+        dry_run,
+        report_path: None,
+        library_name: None,
+        location_name: None,
+        verbose: false,
+        ignore_forced: false,
+        overrides,
+    }
+}
+
+#[test]
+fn override_forces_rating_over_lyrics() {
+    // An override resolves to its rating WITHOUT fetching lyrics (override >
+    // lyrics precedence). Dry-run + a bogus client URL guarantee no network call
+    // is reached on this path; if lyrics were fetched the client would be hit.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(
+        vec![OverrideRule {
+            match_key: "artist/album".into(),
+            rating: Some("R".into()),
+            skip: false,
+        }],
+        true,
+    );
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    assert_eq!(res.source, Source::Override);
+    assert_eq!(res.action, RatingAction::DryRun);
+    assert_eq!(res.tier.as_deref(), Some("R"));
+    assert!(!res.has_lyrics);
+}
+
+#[test]
+fn override_skip_leaves_rating_untouched() {
+    // skip = true short-circuits with no server call even when NOT a dry run, and
+    // preserves the existing rating.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(
+        vec![OverrideRule {
+            match_key: "artist/album".into(),
+            rating: None,
+            skip: true,
+        }],
+        false,
+    );
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (mut view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    view.official_rating = Some("R".into());
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    assert_eq!(res.source, Source::Override);
+    assert_eq!(res.action, RatingAction::Skipped);
+    assert_eq!(res.previous_rating.as_deref(), Some("R"));
+}
+
+#[test]
+fn ignore_forced_bypasses_override() {
+    // --ignore-forced suppresses per-song overrides too. `audio_item` sets no
+    // media streams and empty genres, so with the override skipped the item
+    // falls through the lyrics path to the no-lyrics/no-genre skip: source
+    // Lyrics, has_lyrics false. (No network: a stream-less Emby raw resolves
+    // lyrics purely from the JSON, never reaching the bogus client.)
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let mut cfg = override_test_config(
+        vec![OverrideRule {
+            match_key: "artist/album".into(),
+            rating: Some("R".into()),
+            skip: false,
+        }],
+        true,
+    );
+    cfg.ignore_forced = true;
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    assert_eq!(res.source, Source::Lyrics);
+    assert!(!res.has_lyrics);
 }
 
 // ── decide_rating_action tests ──────────────────────────────────────
@@ -422,7 +640,9 @@ fn report_csv_output() {
     let results = vec![
         ItemResult {
             item_id: "id1".into(),
-            path: Some("/music/artist/album/track.flac".into()),
+            // Mixed case + backslashes so the assertions below actually exercise
+            // the path column's normalization contract (CR #237).
+            path: Some(r"C:\Music\Artist\Album\Track.FLAC".into()),
             artist: Some("Artist".into()),
             album: Some("Album".into()),
             tier: Some("R".into()),
@@ -454,11 +674,16 @@ fn report_csv_output() {
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(
         lines[0],
-        "artist,album,track,tier,matched_words,previous_rating,action,source,server,has_lyrics"
+        "artist,album,track,path,tier,matched_words,previous_rating,action,source,server,has_lyrics"
     );
     assert!(lines[1].contains("Artist"));
     assert!(lines[1].contains("Album"));
-    assert!(lines[1].contains("track.flac"));
+    // `track` column keeps the raw filename (case preserved).
+    assert!(lines[1].contains("Track.FLAC"));
+    // `path` column is the normalized match-key: lowercased AND separator-
+    // normalized (backslashes -> forward slashes), never the raw input form.
+    assert!(lines[1].contains("c:/music/artist/album/track.flac"));
+    assert!(!lines[1].contains(r"C:\Music"));
     assert!(lines[1].contains("R"));
     assert!(lines[1].contains("word1; word2"));
     assert!(lines[1].contains("set"));
@@ -705,6 +930,7 @@ mod integration {
             location_name: None,
             verbose: false,
             ignore_forced: false,
+            overrides: vec![],
         }
     }
 

@@ -155,6 +155,7 @@ fn build_raw_config(
         detection: detection_section,
         general,
         report: existing.and_then(|e| e.report.clone()),
+        overrides: existing.and_then(|e| e.overrides.clone()),
     }
 }
 
@@ -324,6 +325,76 @@ overwrite = true
         let env_content = std::fs::read_to_string(&env_path).unwrap();
         assert!(env_content.contains("EXISTING_SERVER_API_KEY=old-key"));
         assert!(env_content.contains("HOME_JELLYFIN_API_KEY=new-api-key"));
+    }
+
+    #[test]
+    fn existing_overrides_are_preserved_on_add_server() {
+        // Regression (CR #237): the wizard has no step to author [[overrides]],
+        // so an add-server re-run must carry the user's existing override table
+        // forward rather than silently wiping it.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let env_path = dir.path().join(".env");
+
+        std::fs::write(
+            &config_path,
+            r#"
+[servers.existing-server]
+url = "http://localhost:8096"
+type = "emby"
+
+[general]
+overwrite = true
+
+[[overrides]]
+match = "artist/album"
+rating = "G"
+"#,
+        )
+        .unwrap();
+        std::fs::write(&env_path, "EXISTING_SERVER_API_KEY=old-key\n").unwrap();
+
+        let existing =
+            crate::config::parse_toml(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        let server = ServerInfo {
+            url: "http://localhost:8097".to_string(),
+            label: "home-jellyfin".to_string(),
+            server_type: ServerType::Jellyfin,
+        };
+        let genres = GenreConfig {
+            genres: vec![],
+            libraries: vec![],
+        };
+        let detection = DetectionAdditions {
+            extra_r_stems: vec![],
+            extra_r_exact: vec![],
+            extra_pg13_stems: vec![],
+            extra_pg13_exact: vec![],
+            extra_false_positives: vec![],
+        };
+        let prefs = Preferences { overwrite: true };
+
+        write_config(
+            &config_path,
+            &env_path,
+            Some(&existing),
+            &server,
+            "new-api-key",
+            &genres,
+            &detection,
+            &prefs,
+            true,
+        )
+        .unwrap();
+
+        // The override table survives the re-serialization round-trip.
+        let reparsed =
+            crate::config::parse_toml(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let overrides = reparsed.overrides.expect("overrides table preserved");
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].match_key.as_deref(), Some("artist/album"));
+        assert_eq!(overrides[0].rating.as_deref(), Some("G"));
     }
 
     #[test]

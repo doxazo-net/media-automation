@@ -35,7 +35,7 @@ This project's job is flagging explicit content, so its detection **data** neces
         ├── rating/           # Workflow orchestration
         │   ├── mod.rs        # rate_workflow, force_workflow, reset_workflow, print_summary
         │   ├── action.rs     # decide_rating_action, decide_clear_action, apply_rating (GET+POST round-trip)
-        │   ├── scope.rs      # resolve_from_libraries, filter_by_location, lookup_force_rating
+        │   ├── scope.rs      # resolve_from_libraries, filter_by_location, build_force_rules/resolve_force_rating, resolve_override
         │   └── tests.rs      # Scope and action unit tests
         ├── report.rs         # CSV report writer (csv crate)
         ├── server/           # HTTP client and API abstractions
@@ -99,6 +99,7 @@ Clap-derived parser with four subcommands:
 6. **Overwrite**: CLI flag > TOML `[general].overwrite` > default `true`.
 6b. **Clean rating**: TOML `[general].clean_rating` > default `"G"`. The rating applied to clean-lyric tracks (no explicit content) so they stay playable under a parental gate that blocks unrated items. An explicit empty string (`clean_rating = ""`) opts out and restores the legacy behavior (clear the rating, leaving clean tracks unrated).
 7. **Report path**: CLI `--report` > TOML `[report].output_path` > None.
+8. **Per-song overrides**: TOML `[[overrides]]` array-of-tables (see Per-Song Overrides below). Resolved into normalized `OverrideRule`s; no CLI equivalent.
 
 Key types: `RawConfig` (serde TOML shape) vs `Config` (resolved, validated). `CliInput` is a plain struct that decouples config loading from clap.
 
@@ -142,15 +143,15 @@ Lyrics fetch (Emby): `find_emby_lyrics_stream` selects an external subtitle stre
 
 All three workflows follow the same pattern: resolve library scope → prefetch items → filter by location → process each item → return `Vec<ItemResult>`.
 
-- **`rate_workflow`**: for each item: check config-level `force_rating` (unless `--ignore-forced`) → fetch lyrics → `classify_lyrics` → set R/PG-13 on explicit content, else set `[general].clean_rating` (default `"G"`) on clean tracks (or clear them when `clean_rating` is empty). No-lyrics items fall through to genre allow-list check (`match_g_genre → "G"`).
+- **`rate_workflow`**: for each item, precedence is **per-song override > config `force_rating` > lyrics/genre** (all forced tiers bypassed by `--ignore-forced`): resolve any `[[overrides]]` match (force its rating, or `skip`) → resolve config `force_rating` for the item's path (see below) → fetch lyrics → `classify_lyrics` → set R/PG-13 on explicit content, else set `[general].clean_rating` (default `"G"`) on clean tracks (or clear them when `clean_rating` is empty). No-lyrics items fall through to genre allow-list check (`match_g_genre → "G"`).
 - **`force_workflow`**: set a fixed rating on all items in scope. No lyrics evaluation.
 - **`reset_workflow`**: clear `OfficialRating` on all items in scope.
 
 **Action decisions** (`rating/action.rs`): `decide_rating_action` and `decide_clear_action` are pure functions — no server calls. `apply_rating` performs the GET+POST round-trip. Auth errors (401/403) abort the entire workflow via `RatingError::Auth`.
 
-**Library scoping** (`rating/scope.rs`): `resolve_from_libraries` resolves `--library` and `--location` flags against `VirtualFolder` data. `filter_by_location` is a post-prefetch, case-insensitive, separator-normalized path-prefix filter against each item's reported `Path`. When a resolved `--location` filters a non-empty set down to zero, it emits a `log::warn!` (visible at the default log level) naming the prefix used and sample real item path roots, because that almost always means the item paths use a different mount view than the library location (e.g. UNC `\\host\share` vs posix `/share`) rather than a genuinely empty folder. `lookup_force_rating` resolves config-level force ratings with precedence: location > library.
+**Library scoping** (`rating/scope.rs`): `resolve_from_libraries` resolves `--library` and `--location` flags against `VirtualFolder` data. `filter_by_location` is a post-prefetch, case-insensitive, separator-normalized path-prefix filter against each item's reported `Path`. When a resolved `--location` filters a non-empty set down to zero, it emits a `log::warn!` (visible at the default log level) naming the prefix used and sample real item path roots, because that almost always means the item paths use a different mount view than the library location (e.g. UNC `\\host\share` vs posix `/share`) rather than a genuinely empty folder. Config-level `force_rating` is applied **per item by path**, so a full-library run honors the same forces a scoped run would (issue #235; a scope-name lookup silently ignored them in full runs). `build_force_rules` resolves each configured library/location name to its real `VirtualFolder` folder path(s) and `resolve_force_rating` matches an item's path against them (normalized prefix, with the same bounded leaf-segment fallback as `filter_by_location` for UNC-vs-posix mount-view mismatch); precedence is location > library, ties broken by longest prefix. `resolve_override` matches a normalized-path substring (longest key wins) for the per-song `[[overrides]]` feature (issue #236).
 
-**Result types**: `ItemResult` captures item metadata, tier, matched words, previous rating, action taken, source (Lyrics/Genre/Force/Reset), server name, and `has_lyrics` (true only when lyrics were fetched and classified — distinguishes a lyric-less track from one with clean lyrics, which drives the `Clean` vs `No lyrics` summary counts). `RatingAction` enum: Set, Cleared, Skipped, AlreadyCorrect, DryRun, DryRunClear, Review (genre-G vetoed by `deny_genres`; left unrated for manual review), Error.
+**Result types**: `ItemResult` captures item metadata, tier, matched words, previous rating, action taken, source (Lyrics/Genre/Force/Reset/Override), server name, and `has_lyrics` (true only when lyrics were fetched and classified — distinguishes a lyric-less track from one with clean lyrics, which drives the `Clean` vs `No lyrics` summary counts). `RatingAction` enum: Set, Cleared, Skipped, AlreadyCorrect, DryRun, DryRunClear, Review (genre-G vetoed by `deny_genres`; left unrated for manual review), Error.
 
 ### Configure wizard (wizard/)
 
@@ -168,7 +169,7 @@ Steps 3-5 are skipped when adding a server to an existing config.
 
 ### Report (report.rs)
 
-`write_report` writes a CSV with columns: artist, album, track, tier, matched_words, previous_rating, action, source, server, has_lyrics. Creates parent directories if needed. Errors are logged, not fatal. `has_lyrics` is true only when lyrics were fetched and classified (distinguishes a genuinely lyric-less track from one with clean lyrics).
+`write_report` writes a CSV with columns: artist, album, track, path, tier, matched_words, previous_rating, action, source, server, has_lyrics. The `path` column is the normalized match-key (lowercased, forward-slash full path) — copy any substring of it into an `[[overrides]]` `match`. Creates parent directories if needed. Errors are logged, not fatal. `has_lyrics` is true only when lyrics were fetched and classified (distinguishes a genuinely lyric-less track from one with clean lyrics).
 
 ### Utilities (util.rs)
 
@@ -209,6 +210,25 @@ HOME_EMBY_API_KEY=your-key
 
 Server type is auto-detected; override with `type = "emby"` or `type = "jellyfin"` in the TOML section. `--server NAME` selects a specific server (repeatable). `--server-url` + `--api-key` provides one-off credentials without any TOML config.
 
+## Per-Song Overrides
+
+`[[overrides]]` (top-level array-of-tables in `config.toml`) force or exempt individual tracks, independent of lyrics/genre. This is the tool for the residual false-positive class that has **no** content-level fix (a real word that is non-profane in context, e.g. a garden "hoe" or a rooster "cock crow") and cannot be fixed by `false_positives` (the offending token *is* the bare word). It is a **user-local** config feature, not a shipped default.
+
+```toml
+[[overrides]]
+match  = "artist/album"          # case-insensitive, separator-normalized path substring
+rating = "G"                      # force this rating (album-wide)
+
+[[overrides]]
+match = "artist/album/07. track"  # a longer substring pins a single track
+skip  = true                      # never touch this track's rating
+```
+
+- **Keying**: a normalized-path substring matched against each item's reported path (not full paths — Emby reports UNC for audio vs posix for sidecars — and not opaque item IDs). Precision is the user's choice: short = album/artist, longer (incl. filename) = one track. The report's `path` column is the exact string to copy from.
+- **Precedence**: override > location/library `force_rating` > lyrics/genre. Among overrides, the longest (most specific) matching key wins. `rating` forces that rating; `skip = true` leaves the existing rating untouched.
+- **Match-count logging**: each run logs how many items every override reached (`override match='…' matched N item(s)`), warning on 0 (a typo / wrong separators) so a misfire is visible.
+- Entries with no `match`, or with neither `rating` nor `skip = true`, are dropped with a warning. `--ignore-forced` bypasses overrides along with `force_rating`.
+
 ## Configuration
 
 - API keys go in `.env` at the repo root (or alongside the TOML config) as `{LABEL}_API_KEY` — never in TOML or committed files
@@ -217,6 +237,8 @@ Server type is auto-detected; override with `type = "emby"` or `type = "jellyfin
 - Only `.env.example` is committed; `.env` variants are gitignored. TOML configs are user-managed (wizard writes to the platform config dir, not the repo)
 - `overwrite` (default `true`): when true, `rate` re-evaluates all tracks including re-rating clean tracks to `clean_rating`; when false, skips tracks with existing ratings (`--skip-existing`)
 - `clean_rating` (default `"G"`): rating applied to clean-lyric tracks so they remain playable under a parental gate that blocks unrated Music; set `clean_rating = ""` to clear clean tracks instead (legacy behavior)
+- `force_rating` (library/location): applied **per item by path** on every run, including full-library runs (not only when scoped with `--location`/`--library`)
+- `[[overrides]]`: per-song force/skip by normalized-path substring (see Per-Song Overrides); highest precedence
 - Precedence: CLI flags > env vars > `.env` file > TOML config > hardcoded defaults
 
 ## CI

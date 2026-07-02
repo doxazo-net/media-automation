@@ -20,6 +20,13 @@ pub fn location_leaf(path: &str) -> &str {
     }
 }
 
+/// Normalize a path for comparison: backslashes to forward slashes, lowercased.
+/// Shared by location filtering, per-item force-rating resolution, and per-song
+/// override matching so every path comparison uses one canonical form.
+pub fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
+}
+
 /// Remove LRC timestamp tags and metadata lines from lyrics text.
 pub fn strip_lrc_tags(text: &str) -> String {
     let text = LRC_TIMESTAMP.replace_all(text, "");

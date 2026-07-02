@@ -21,6 +21,7 @@ fn sample_config() -> RawConfig {
             clean_rating: None,
         }),
         report: None,
+        overrides: None,
     }
 }
 

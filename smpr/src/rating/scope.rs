@@ -1,6 +1,6 @@
 use crate::rating::{LibraryScope, RatingError};
 use crate::server::types::VirtualFolder;
-use crate::util::location_leaf;
+use crate::util::{location_leaf, normalize_path};
 
 /// Pure library/location scoping logic. Testable without a server.
 ///
@@ -204,11 +204,6 @@ pub fn filter_by_location(
     filtered
 }
 
-/// Normalize path separators to forward slash and lowercase for comparison.
-fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/").to_lowercase()
-}
-
 /// Representative, de-duplicated leading path roots (first two normalized
 /// segments) drawn from real item paths, capped at 5. Pure and side-effect
 /// free so the diagnostic content is unit-testable without a log harness.
@@ -252,34 +247,162 @@ pub(crate) fn sample_path_roots(
     roots
 }
 
-/// Look up force_rating from server config for the given library/location scope.
-/// Returns the force_rating string if found, None otherwise.
-///
-/// Precedence: location force_rating > library force_rating > None.
-pub fn lookup_force_rating<'a>(
-    server_config: &'a crate::config::ServerConfig,
-    library_name: Option<&str>,
-    location_name: Option<&str>,
-) -> Option<&'a str> {
-    let lib_name = library_name?;
-    let lib_config = server_config
-        .libraries
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(lib_name))
-        .map(|(_, cfg)| cfg)?;
+// ── Per-item force-rating rules (issue #235) ────────────────────────
 
-    // Check location-level first
-    if let Some(loc_name) = location_name
-        && let Some(loc_config) = lib_config
-            .locations
+/// A resolved force-rating rule: an item whose normalized path falls under this
+/// folder is forced to `rating`. Built from server config + discovered library
+/// folders so a *full* run honors the same forces a `--location`/`--library`
+/// scoped run would. Location-level rules take precedence over library-level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForceRule {
+    /// Normalized folder path (lowercased, forward-slash, no trailing slash).
+    prefix: String,
+    /// `prefix` with a trailing slash, precomputed so the hot per-item match loop
+    /// (82k items x N rules) does no per-check allocation.
+    prefix_with_sep: String,
+    /// Bounded leaf segment (`/leaf/`) for the UNC-vs-posix mount-view fallback
+    /// (issue #216), or `None` for a degenerate (empty) leaf.
+    leaf: Option<String>,
+    rating: String,
+    /// True for a location-level rule (beats a library-level rule on the same item).
+    is_location: bool,
+}
+
+/// Build force-rating rules from a server's configured library/location
+/// `force_rating`s, resolving each configured name to its real folder path(s)
+/// via the discovered `VirtualFolder` data. A library-level `force_rating`
+/// applies to every folder of that library; a location-level one applies to the
+/// folder whose leaf matches the configured location name.
+pub fn build_force_rules(
+    server_config: &crate::config::ServerConfig,
+    libraries: &[VirtualFolder],
+) -> Vec<ForceRule> {
+    let mut rules = Vec::new();
+    for (lib_name, lib_cfg) in &server_config.libraries {
+        let lib_has_force = lib_cfg.force_rating.is_some()
+            || lib_cfg.locations.values().any(|l| l.force_rating.is_some());
+        let Some(vf) = libraries
             .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(loc_name))
-            .map(|(_, cfg)| cfg)
-        && let Some(ref rating) = loc_config.force_rating
-    {
-        return Some(rating.as_str());
+            .find(|l| l.name.eq_ignore_ascii_case(lib_name))
+        else {
+            // Fail loud, not silent: an unresolvable library that carries a force
+            // is the exact #235 silent-ignore symptom (a typo or a server rename).
+            if lib_has_force {
+                log::warn!(
+                    "configured library '{lib_name}' has a force_rating but no matching \
+                     music library was found on the server; its force(s) are ignored"
+                );
+            }
+            continue;
+        };
+        // Library-level force applies to every folder of the library.
+        if let Some(rating) = &lib_cfg.force_rating {
+            for loc_path in &vf.locations {
+                rules.push(make_force_rule(loc_path, rating, false));
+            }
+        }
+        // Location-level force applies to the folder whose leaf matches the name.
+        for (loc_name, loc_cfg) in &lib_cfg.locations {
+            let Some(rating) = &loc_cfg.force_rating else {
+                continue;
+            };
+            match vf
+                .locations
+                .iter()
+                .find(|p| location_leaf(p).eq_ignore_ascii_case(loc_name))
+            {
+                Some(loc_path) => rules.push(make_force_rule(loc_path, rating, true)),
+                None => log::warn!(
+                    "configured location '{loc_name}' (library '{lib_name}') has a \
+                     force_rating but no matching folder in the library; its force is ignored"
+                ),
+            }
+        }
     }
+    rules
+}
 
-    // Fall back to library-level
-    lib_config.force_rating.as_deref()
+fn make_force_rule(location_path: &str, rating: &str, is_location: bool) -> ForceRule {
+    let prefix = normalize_path(location_path.trim_end_matches(['/', '\\']));
+    let prefix_with_sep = format!("{prefix}/");
+    ForceRule {
+        prefix,
+        prefix_with_sep,
+        leaf: leaf_segment(location_path),
+        rating: rating.to_string(),
+        is_location,
+    }
+}
+
+/// Resolve the effective forced rating for an item path. Matching mirrors
+/// `filter_by_location`'s two-phase, set-level precedence: first choose among
+/// **prefix** matches (aligned mount views); only when *no* rule prefix-matches
+/// the item — a genuine mount-view mismatch (UNC vs posix, issue #216) — fall
+/// back to bounded leaf-segment matches. Within each phase a location-level rule
+/// beats a library-level one, ties broken by the longest (most specific) prefix.
+///
+/// Phasing (not a per-rule OR) is what stops a location leaf like `/classical/`
+/// from out-ranking a real library prefix match on an unrelated `.../Classical/`
+/// folder in an aligned-mount run.
+pub fn resolve_force_rating<'a>(
+    rules: &'a [ForceRule],
+    item_path: Option<&str>,
+) -> Option<&'a str> {
+    let norm = normalize_path(item_path?);
+    let best = rules
+        .iter()
+        .filter(|rule| force_rule_prefix_matches(rule, &norm))
+        .reduce(better_force_rule)
+        .or_else(|| {
+            rules
+                .iter()
+                .filter(|rule| force_rule_leaf_matches(rule, &norm))
+                .reduce(better_force_rule)
+        });
+    best.map(|r| r.rating.as_str())
+}
+
+fn force_rule_prefix_matches(rule: &ForceRule, norm_path: &str) -> bool {
+    !rule.prefix.is_empty() && norm_path.starts_with(&rule.prefix_with_sep)
+}
+
+fn force_rule_leaf_matches(rule: &ForceRule, norm_path: &str) -> bool {
+    rule.leaf
+        .as_deref()
+        .is_some_and(|seg| norm_path.contains(seg))
+}
+
+fn better_force_rule<'a>(a: &'a ForceRule, b: &'a ForceRule) -> &'a ForceRule {
+    match (a.is_location, b.is_location) {
+        (true, false) => a,
+        (false, true) => b,
+        _ if b.prefix.len() > a.prefix.len() => b,
+        _ => a,
+    }
+}
+
+// ── Per-song overrides (issue #236) ─────────────────────────────────
+
+/// Resolve the most specific per-song override for an item path: the override
+/// whose normalized match-key is a substring of the normalized item path, with
+/// the longest key winning when several match.
+pub fn resolve_override<'a>(
+    overrides: &'a [crate::config::OverrideRule],
+    item_path: Option<&str>,
+) -> Option<&'a crate::config::OverrideRule> {
+    let norm = normalize_path(item_path?);
+    overrides
+        .iter()
+        .filter(|o| !o.match_key.is_empty() && norm.contains(&o.match_key))
+        .max_by_key(|o| o.match_key.len())
+}
+
+/// True when a (already-normalized) match-key appears in the item's normalized
+/// path. Used for the per-override match-count diagnostic (issue #236),
+/// independent of precedence so a shadowed or over-broad key reports its true
+/// reach.
+pub fn path_contains_key(item_path: Option<&str>, normalized_key: &str) -> bool {
+    item_path
+        .map(|p| normalize_path(p).contains(normalized_key))
+        .unwrap_or(false)
 }
