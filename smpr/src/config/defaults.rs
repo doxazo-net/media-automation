@@ -52,11 +52,17 @@ pub const FALSE_POSITIVES: &[&str] = &[
     "shiitake",
     "shitake",
     // Non-English substring collisions on the `shit` stem (kept as a stem for
-    // compound coverage; see the header comment).
+    // compound coverage; see the header comment). The Japanese romaji te-/ta-form
+    // family (`-shite`/`-shita`) is open-ended, so this is targeted suppression of
+    // the tokens observed on a real ~82k-track library, not an exhaustive rule.
     "kaoshite",
     "shitemo",
     "haidashite",
     "crashity",
+    "shita",   // covers "shita" (した) and "ashita" (明日)
+    "dashite", // e.g. "hikidashite", "dashite"
+    "furishite",
+    "watashitachi", // 私たち ("we")
 ];
 
 pub const DEFAULT_G_GENRES: &[&str] = &[

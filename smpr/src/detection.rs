@@ -384,6 +384,11 @@ mod tests {
             "haidashite from the crowd",
             "the crashity crash of thunder",
             "vi tog ett beslut idag",
+            "ashita mata aou",
+            "kyou shita koto",
+            "hikidashite kudasai",
+            "furishite waratta",
+            "watashitachi wa tomodachi",
         ] {
             assert_eq!(
                 engine.classify_lyrics(clean).0,
