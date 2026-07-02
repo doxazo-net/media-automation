@@ -63,6 +63,10 @@ pub const FALSE_POSITIVES: &[&str] = &[
     "dashite", // e.g. "hikidashite", "dashite"
     "furishite",
     "watashitachi", // 私たち ("we")
+    // Other non-English substring collisions observed on real libraries.
+    "amatshitshi", // isiZulu (Ladysmith Black Mambazo "Amatshitshi")
+    "amatshitsi",  // romanization variant of the above
+    "shitzo",      // hip-hop wordplay ("schizo"-adjacent), not profanity
 ];
 
 pub const DEFAULT_G_GENRES: &[&str] = &[

@@ -389,6 +389,8 @@ mod tests {
             "hikidashite kudasai",
             "furishite waratta",
             "watashitachi wa tomodachi",
+            "asekhon amatshitshi",
+            "ripping you to shitzo",
         ] {
             assert_eq!(
                 engine.classify_lyrics(clean).0,
