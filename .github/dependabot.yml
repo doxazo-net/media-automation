@@ -21,6 +21,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # init and analyze are the same action pinned twice and must move in
+      # lockstep; a single-step bump skews their versions and fails CodeQL.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
     labels:
       - "dependencies"
       - "ci"
