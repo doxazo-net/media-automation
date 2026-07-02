@@ -610,6 +610,29 @@ fn summary_counts_actions() {
     assert_eq!(counts.errors, 0);
 }
 
+#[test]
+fn force_rated_items_excluded_from_lyrics_tier_counts() {
+    // A `force R` item carries tier=Some("R") but has_lyrics=false. The tier
+    // sub-counts print under "Lyrics evaluated", so they must NOT count it (CR #230).
+    let results = vec![ItemResult {
+        item_id: "f1".into(),
+        has_lyrics: false,
+        path: None,
+        artist: None,
+        album: None,
+        tier: Some("R".into()),
+        matched_words: vec![],
+        previous_rating: None,
+        action: RatingAction::Set,
+        source: Source::Force,
+        server_name: "s".into(),
+    }];
+    let counts = SummaryCounts::from_results(&results);
+    assert_eq!(counts.r_rated, 0); // force-rated, not lyrics-evaluated
+    assert_eq!(counts.lyrics_evaluated, 0);
+    assert_eq!(counts.ratings_set, 1); // still counted as a rating set
+}
+
 /// Integration tests — UAT servers only. Gated behind SMPR_UAT_TEST=1.
 /// All tests are READ-ONLY (dry-run). No mutations to UAT data.
 #[cfg(test)]

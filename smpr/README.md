@@ -176,8 +176,8 @@ catches `motherfucker`), while **exact** words match only on whole-word
 boundaries. Words that collide with innocent substrings - `cock`, `cum`, `pussy`,
 and `slut` (e.g. `peacock`, `tecum`, `pussycat`, `beslut`) - are exact entries so
 they never trigger on those. The remaining genuine stems (`fuck`, `shit`,
-`bitch`, `whore`) rely on a configurable ignore list for their rarer collisions
-(e.g. "cocktail", "hancock", "shiitake", romaji `-shite` forms).
+`faggot`, `bitch`, `whore`) rely on a configurable ignore list for their rarer
+collisions (e.g. "cocktail", "hancock", "shiitake", romaji `-shite` forms).
 
 ## Development
 

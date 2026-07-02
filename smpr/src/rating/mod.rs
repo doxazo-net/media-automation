@@ -525,11 +525,15 @@ impl SummaryCounts {
             if r.source == Source::Lyrics && !r.has_lyrics {
                 c.no_lyrics += 1;
             }
-            // Tier counts
-            match r.tier.as_deref() {
-                Some("R") => c.r_rated += 1,
-                Some("PG-13") => c.pg13 += 1,
-                _ => {}
+            // Tier counts. Scoped to lyrics-evaluated items so the R/PG-13
+            // sub-lines (printed under "Lyrics evaluated") stay consistent with
+            // `clean`/`lyrics_evaluated` and force-rated items don't inflate them.
+            if r.has_lyrics {
+                match r.tier.as_deref() {
+                    Some("R") => c.r_rated += 1,
+                    Some("PG-13") => c.pg13 += 1,
+                    _ => {}
+                }
             }
             // Clean = lyrics were evaluated but carried no explicit content.
             if r.has_lyrics && r.tier.is_none() {
