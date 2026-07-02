@@ -257,6 +257,9 @@ pub(crate) fn sample_path_roots(
 pub struct ForceRule {
     /// Normalized folder path (lowercased, forward-slash, no trailing slash).
     prefix: String,
+    /// `prefix` with a trailing slash, precomputed so the hot per-item match loop
+    /// (82k items x N rules) does no per-check allocation.
+    prefix_with_sep: String,
     /// Bounded leaf segment (`/leaf/`) for the UNC-vs-posix mount-view fallback
     /// (issue #216), or `None` for a degenerate (empty) leaf.
     leaf: Option<String>,
@@ -276,10 +279,20 @@ pub fn build_force_rules(
 ) -> Vec<ForceRule> {
     let mut rules = Vec::new();
     for (lib_name, lib_cfg) in &server_config.libraries {
+        let lib_has_force = lib_cfg.force_rating.is_some()
+            || lib_cfg.locations.values().any(|l| l.force_rating.is_some());
         let Some(vf) = libraries
             .iter()
             .find(|l| l.name.eq_ignore_ascii_case(lib_name))
         else {
+            // Fail loud, not silent: an unresolvable library that carries a force
+            // is the exact #235 silent-ignore symptom (a typo or a server rename).
+            if lib_has_force {
+                log::warn!(
+                    "configured library '{lib_name}' has a force_rating but no matching \
+                     music library was found on the server; its force(s) are ignored"
+                );
+            }
             continue;
         };
         // Library-level force applies to every folder of the library.
@@ -293,12 +306,16 @@ pub fn build_force_rules(
             let Some(rating) = &loc_cfg.force_rating else {
                 continue;
             };
-            if let Some(loc_path) = vf
+            match vf
                 .locations
                 .iter()
                 .find(|p| location_leaf(p).eq_ignore_ascii_case(loc_name))
             {
-                rules.push(make_force_rule(loc_path, rating, true));
+                Some(loc_path) => rules.push(make_force_rule(loc_path, rating, true)),
+                None => log::warn!(
+                    "configured location '{loc_name}' (library '{lib_name}') has a \
+                     force_rating but no matching folder in the library; its force is ignored"
+                ),
             }
         }
     }
@@ -306,41 +323,50 @@ pub fn build_force_rules(
 }
 
 fn make_force_rule(location_path: &str, rating: &str, is_location: bool) -> ForceRule {
+    let prefix = normalize_path(location_path.trim_end_matches(['/', '\\']));
+    let prefix_with_sep = format!("{prefix}/");
     ForceRule {
-        prefix: normalize_path(location_path.trim_end_matches(['/', '\\'])),
+        prefix,
+        prefix_with_sep,
         leaf: leaf_segment(location_path),
         rating: rating.to_string(),
         is_location,
     }
 }
 
-/// Resolve the effective forced rating for an item path. Among matching rules a
-/// location-level rule beats a library-level one; ties break to the longest
-/// (most specific) prefix. Matching mirrors `filter_by_location`: a normalized
-/// prefix match, falling back to a bounded leaf-segment match so items reported
-/// under a different mount view (UNC vs posix, issue #216) are still covered.
+/// Resolve the effective forced rating for an item path. Matching mirrors
+/// `filter_by_location`'s two-phase, set-level precedence: first choose among
+/// **prefix** matches (aligned mount views); only when *no* rule prefix-matches
+/// the item — a genuine mount-view mismatch (UNC vs posix, issue #216) — fall
+/// back to bounded leaf-segment matches. Within each phase a location-level rule
+/// beats a library-level one, ties broken by the longest (most specific) prefix.
+///
+/// Phasing (not a per-rule OR) is what stops a location leaf like `/classical/`
+/// from out-ranking a real library prefix match on an unrelated `.../Classical/`
+/// folder in an aligned-mount run.
 pub fn resolve_force_rating<'a>(
     rules: &'a [ForceRule],
     item_path: Option<&str>,
 ) -> Option<&'a str> {
     let norm = normalize_path(item_path?);
-    let mut best: Option<&ForceRule> = None;
-    for rule in rules {
-        if !force_rule_matches(rule, &norm) {
-            continue;
-        }
-        best = Some(match best {
-            Some(cur) => better_force_rule(cur, rule),
-            None => rule,
+    let best = rules
+        .iter()
+        .filter(|rule| force_rule_prefix_matches(rule, &norm))
+        .reduce(better_force_rule)
+        .or_else(|| {
+            rules
+                .iter()
+                .filter(|rule| force_rule_leaf_matches(rule, &norm))
+                .reduce(better_force_rule)
         });
-    }
     best.map(|r| r.rating.as_str())
 }
 
-fn force_rule_matches(rule: &ForceRule, norm_path: &str) -> bool {
-    if !rule.prefix.is_empty() && norm_path.starts_with(&format!("{}/", rule.prefix)) {
-        return true;
-    }
+fn force_rule_prefix_matches(rule: &ForceRule, norm_path: &str) -> bool {
+    !rule.prefix.is_empty() && norm_path.starts_with(&rule.prefix_with_sep)
+}
+
+fn force_rule_leaf_matches(rule: &ForceRule, norm_path: &str) -> bool {
     rule.leaf
         .as_deref()
         .is_some_and(|seg| norm_path.contains(seg))

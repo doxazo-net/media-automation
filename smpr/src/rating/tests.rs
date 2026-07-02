@@ -347,6 +347,25 @@ fn force_rule_mount_view_mismatch_leaf_fallback() {
 }
 
 #[test]
+fn force_rule_leaf_does_not_beat_a_real_prefix_match() {
+    // CR #237: in an aligned-mount run, a folder literally named "Classical"
+    // inside the Music tree must NOT be forced by the classical *location* rule
+    // via its leaf just because location rules outrank library rules. Prefix
+    // matches are resolved first; the leaf phase only runs when none exist. So
+    // the decoy resolves to the library force (PG-13), not G.
+    let rules = scope::build_force_rules(&server_with_force_ratings(), &force_libs());
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Music/VA/Classical/decoy.flac")),
+        Some("PG-13")
+    );
+    // The genuine classical track (real prefix match) is still forced G.
+    assert_eq!(
+        scope::resolve_force_rating(&rules, Some("/share/Classical/real.flac")),
+        Some("G")
+    );
+}
+
+#[test]
 fn force_rule_unconfigured_library_yields_nothing() {
     // A configured library with no matching VirtualFolder produces no rules.
     let rules = scope::build_force_rules(&server_with_force_ratings(), &[]);
@@ -489,11 +508,11 @@ fn override_skip_leaves_rating_untouched() {
 
 #[test]
 fn ignore_forced_bypasses_override() {
-    // --ignore-forced suppresses per-song overrides too. With no lyrics fetchable
-    // (bogus client), the override would otherwise force R; instead the code must
-    // fall through to the lyrics path (which errors on the network, proving the
-    // override branch was skipped). We assert the override did NOT apply by using
-    // a genre fallback path: give the item a G genre and no reachable lyrics.
+    // --ignore-forced suppresses per-song overrides too. `audio_item` sets no
+    // media streams and empty genres, so with the override skipped the item
+    // falls through the lyrics path to the no-lyrics/no-genre skip: source
+    // Lyrics, has_lyrics false. (No network: a stream-less Emby raw resolves
+    // lyrics purely from the JSON, never reaching the bogus client.)
     let client =
         MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
     let mut cfg = override_test_config(
@@ -507,11 +526,9 @@ fn ignore_forced_bypasses_override() {
     cfg.ignore_forced = true;
     let engine = DetectionEngine::new(&cfg.detection);
     let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
-    // With ignore_forced, rate_item skips the override and proceeds to fetch
-    // lyrics; against the bogus client that fetch fails and is treated as
-    // no-lyrics, so the item is not rated via override.
     let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
-    assert_ne!(res.source, Source::Override);
+    assert_eq!(res.source, Source::Lyrics);
+    assert!(!res.has_lyrics);
 }
 
 // ── decide_rating_action tests ──────────────────────────────────────
@@ -623,7 +640,9 @@ fn report_csv_output() {
     let results = vec![
         ItemResult {
             item_id: "id1".into(),
-            path: Some("/music/artist/album/track.flac".into()),
+            // Mixed case + backslashes so the assertions below actually exercise
+            // the path column's normalization contract (CR #237).
+            path: Some(r"C:\Music\Artist\Album\Track.FLAC".into()),
             artist: Some("Artist".into()),
             album: Some("Album".into()),
             tier: Some("R".into()),
@@ -659,9 +678,12 @@ fn report_csv_output() {
     );
     assert!(lines[1].contains("Artist"));
     assert!(lines[1].contains("Album"));
-    assert!(lines[1].contains("track.flac"));
-    // Normalized match-key column (lowercased full path).
-    assert!(lines[1].contains("/music/artist/album/track.flac"));
+    // `track` column keeps the raw filename (case preserved).
+    assert!(lines[1].contains("Track.FLAC"));
+    // `path` column is the normalized match-key: lowercased AND separator-
+    // normalized (backslashes -> forward slashes), never the raw input form.
+    assert!(lines[1].contains("c:/music/artist/album/track.flac"));
+    assert!(!lines[1].contains(r"C:\Music"));
     assert!(lines[1].contains("R"));
     assert!(lines[1].contains("word1; word2"));
     assert!(lines[1].contains("set"));
