@@ -390,6 +390,7 @@ mod tests {
             "furishite waratta",
             "watashitachi wa tomodachi",
             "asekhon amatshitshi",
+            "asekhon amatshitsi",
             "ripping you to shitzo",
         ] {
             assert_eq!(
