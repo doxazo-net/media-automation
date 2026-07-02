@@ -11,6 +11,10 @@ open work items, next actions, and durable key facts (prod paths, Emby IDs/endpo
 
 Rust CLI (`smpr`) for Emby/Jellyfin parental rating management. Fetches lyrics from the Emby or Jellyfin API, detects explicit content using tiered word detection (R / PG-13), and sets `OfficialRating` on matching audio tracks.
 
+## Keep GitHub posts G-rated
+
+This project's job is flagging explicit content, so its detection **data** necessarily contains profanity — the word-list source files (`smpr/src/config/defaults.rs`, user `config.toml`) are exempt; they must contain the terms to function. But every human-facing GitHub surface — issue and PR **titles and bodies**, PR/issue **comments**, **commit messages** (a squash-merge uses the PR title, so keep that clean), and **release notes** — must stay **G-rated**: do not spell out profanity in prose. Describe it generically ("a profanity stem", "a masked substring", "an innocent token containing a profanity substring"). Release notes additionally must not be hard-wrapped (GitHub renders newlines literally). If something un-G-rated slips onto a shared surface, redact it.
+
 ## Repository Layout
 
 ```text
