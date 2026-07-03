@@ -86,10 +86,8 @@ pub struct MatchParams {
 pub fn best_match(query: &TrackQuery, hits: &[SourceHit], params: &MatchParams) -> Option<Match> {
     hits.iter()
         .filter_map(|hit| {
-            let confidence = text_confidence(query, hit);
-            if confidence < params.min_confidence {
-                return None;
-            }
+            // Cheap gates first, so a hit that will be rejected anyway never pays
+            // for normalization + Jaro-Winkler (matters on large result sets).
             let delta = duration_delta(query, hit);
             if let Some(d) = delta
                 && d > params.duration_tolerance_s
@@ -103,6 +101,11 @@ pub fn best_match(query: &TrackQuery, hits: &[SourceHit], params: &MatchParams) 
             let artist_corroborated = query.artist.is_some() && hit.artist.is_some();
             let duration_corroborated = delta.is_some();
             if !artist_corroborated && !duration_corroborated {
+                return None;
+            }
+            // Expensive text similarity only for hits that survived the cheap gates.
+            let confidence = text_confidence(query, hit);
+            if confidence < params.min_confidence {
                 return None;
             }
             Some(Match {
