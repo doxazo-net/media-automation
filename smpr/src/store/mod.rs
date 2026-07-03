@@ -59,11 +59,13 @@ impl SourceStore {
                 duration_s       INTEGER,
                 source           TEXT NOT NULL,
                 source_track_id  TEXT,
-                source_verdict   TEXT NOT NULL,
+                source_verdict   TEXT NOT NULL
+                    CHECK (source_verdict IN ('explicit', 'cleaned', 'not_explicit')),
                 match_confidence REAL NOT NULL,
                 duration_delta_s INTEGER,
                 matched_at       TEXT NOT NULL DEFAULT (datetime('now')),
-                curated_override TEXT,
+                curated_override TEXT
+                    CHECK (curated_override IN ('explicit', 'cleaned', 'not_explicit')),
                 notes            TEXT
             );",
         )
@@ -130,16 +132,20 @@ impl SourceStore {
     }
 
     /// Set or clear the user curation override for a track.
+    ///
+    /// Returns `true` when a row was updated, `false` when no track matched
+    /// `track_key` (so a caller can surface a missing-track curation instead of
+    /// treating the silent no-op as success).
     pub fn set_curated(
         &self,
         track_key: &str,
         verdict: Option<SourceVerdict>,
-    ) -> rusqlite::Result<()> {
-        self.conn.execute(
+    ) -> rusqlite::Result<bool> {
+        let affected = self.conn.execute(
             "UPDATE source_verdicts SET curated_override = ?2 WHERE track_key = ?1",
             params![track_key, verdict.map(|v| v.as_str())],
         )?;
-        Ok(())
+        Ok(affected > 0)
     }
 
     fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<VerdictRecord> {
@@ -155,11 +161,30 @@ impl SourceStore {
             duration_s: row.get(6)?,
             source: row.get(7)?,
             source_track_id: row.get(8)?,
-            source_verdict: SourceVerdict::parse(&verdict_s).unwrap_or(SourceVerdict::NotExplicit),
+            // Fail loud on an unrecognized stored value rather than silently
+            // coercing it to a verdict (which would either downgrade explicit
+            // content or fabricate an R rating). A CHECK constraint prevents
+            // invalid values from being stored; this is the read-side backstop.
+            source_verdict: parse_verdict_column(9, &verdict_s)?,
             match_confidence: row.get(10)?,
             duration_delta_s: row.get(11)?,
-            curated_override: curated_s.as_deref().and_then(SourceVerdict::parse),
+            curated_override: curated_s
+                .map(|s| parse_verdict_column(12, &s))
+                .transpose()?,
             notes: row.get(13)?,
         })
     }
+}
+
+/// Parse a stored verdict string, returning a rusqlite conversion error (not a
+/// silent default) when the value is not a recognized verdict. `column` is the
+/// 0-based result-set index, for the error message.
+fn parse_verdict_column(column: usize, value: &str) -> rusqlite::Result<SourceVerdict> {
+    SourceVerdict::parse(value).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            format!("invalid verdict value {value:?}").into(),
+        )
+    })
 }

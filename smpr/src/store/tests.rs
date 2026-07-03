@@ -92,3 +92,71 @@ fn effective_verdict_missing_is_none() {
     let store = SourceStore::open_in_memory().unwrap();
     assert_eq!(store.effective_verdict("nope").unwrap(), None);
 }
+
+#[test]
+fn upsert_conflict_maps_duration_delta_not_duration() {
+    // Guards against an ON CONFLICT column mis-map: the update must set
+    // duration_delta_s from the new row's delta, never from duration_s.
+    let store = SourceStore::open_in_memory().unwrap();
+    let mut first = sample("k1", SourceVerdict::Explicit);
+    first.duration_delta_s = Some(9);
+    store.upsert(&first).unwrap();
+
+    let mut second = sample("k1", SourceVerdict::Explicit);
+    second.duration_s = Some(215);
+    second.duration_delta_s = Some(1);
+    store.upsert(&second).unwrap();
+
+    let got = store.get("k1").unwrap().unwrap();
+    assert_eq!(got.duration_delta_s, Some(1)); // the new delta, not 9 and not 215
+    assert_eq!(got.duration_s, Some(215));
+}
+
+#[test]
+fn set_curated_none_clears_override() {
+    let store = SourceStore::open_in_memory().unwrap();
+    store
+        .upsert(&sample("k1", SourceVerdict::NotExplicit))
+        .unwrap();
+    store
+        .set_curated("k1", Some(SourceVerdict::Explicit))
+        .unwrap();
+    assert_eq!(
+        store.effective_verdict("k1").unwrap(),
+        Some(SourceVerdict::Explicit)
+    );
+
+    let cleared = store.set_curated("k1", None).unwrap();
+    assert!(cleared);
+    assert_eq!(
+        store.effective_verdict("k1").unwrap(),
+        Some(SourceVerdict::NotExplicit)
+    );
+}
+
+#[test]
+fn set_curated_missing_key_returns_false() {
+    let store = SourceStore::open_in_memory().unwrap();
+    assert!(
+        !store
+            .set_curated("nope", Some(SourceVerdict::Explicit))
+            .unwrap()
+    );
+}
+
+#[test]
+fn check_constraint_rejects_invalid_verdict() {
+    // Bypass the typed API to attempt storing an invalid verdict; the schema
+    // CHECK constraint must reject it, so an invalid value can never reach the
+    // read path in the first place.
+    let store = SourceStore::open_in_memory().unwrap();
+    let result = store.conn.execute(
+        "INSERT INTO source_verdicts (track_key, source, source_verdict, match_confidence)
+         VALUES ('k1', 'itunes', 'bogus', 0.5)",
+        [],
+    );
+    assert!(
+        result.is_err(),
+        "CHECK constraint should reject an invalid source_verdict"
+    );
+}
