@@ -48,6 +48,12 @@ fn upsert_same_key_updates_not_duplicates() {
         .unwrap();
     let got = store.get("k1").unwrap().unwrap();
     assert_eq!(got.source_verdict, SourceVerdict::Explicit);
+    // Prove the second upsert updated in place rather than inserting a row.
+    let count: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM source_verdicts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
 }
 
 #[test]
@@ -85,6 +91,11 @@ fn curation_survives_reenrich() {
         store.effective_verdict("k1").unwrap(),
         Some(SourceVerdict::Explicit)
     );
+    // Exercise both halves: the raw source verdict was overwritten, and the
+    // curated override survived.
+    let got = store.get("k1").unwrap().unwrap();
+    assert_eq!(got.source_verdict, SourceVerdict::Cleaned);
+    assert_eq!(got.curated_override, Some(SourceVerdict::Explicit));
 }
 
 #[test]
