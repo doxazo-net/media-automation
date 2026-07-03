@@ -19,11 +19,14 @@ fn audio_item(id: &str, path: &str) -> (AudioItemView, serde_json::Value) {
     });
     let view = AudioItemView {
         id: id.to_string(),
+        name: None,
         path: Some(path.to_string()),
         official_rating: None,
         album_artist: None,
         album: None,
         genres: vec![],
+        run_time_ticks: None,
+        provider_ids: None,
     };
     (view, val)
 }

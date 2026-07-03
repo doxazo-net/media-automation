@@ -477,3 +477,26 @@ fn emby_candidate_missing_index_does_not_abort_search() {
     assert_eq!(media_source_id, "ms_9004");
     assert_eq!(stream_index, 3);
 }
+
+#[test]
+fn audio_item_duration_and_mbid_derivation() {
+    use super::super::types::AudioItemView;
+    let view: AudioItemView = serde_json::from_value(serde_json::json!({
+        "Id": "1",
+        "Name": "Some Title",
+        "RunTimeTicks": 2_150_000_000i64, // 215s
+        "ProviderIds": { "MusicBrainzTrack": "mb-abc", "MusicBrainzAlbum": "mb-xyz" }
+    }))
+    .unwrap();
+    assert_eq!(view.name.as_deref(), Some("Some Title"));
+    assert_eq!(view.duration_s(), Some(215));
+    assert_eq!(view.mbid(), Some("mb-abc"));
+}
+
+#[test]
+fn audio_item_missing_ticks_and_ids_are_none() {
+    use super::super::types::AudioItemView;
+    let view: AudioItemView = serde_json::from_value(serde_json::json!({ "Id": "1" })).unwrap();
+    assert_eq!(view.duration_s(), None);
+    assert_eq!(view.mbid(), None);
+}

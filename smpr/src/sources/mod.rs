@@ -4,6 +4,7 @@
 //! defines the shared verdict/query/hit types and the `Source` trait, plus (via
 //! `matcher`) the pure confidence-gated matching logic.
 
+pub mod itunes;
 pub mod matcher;
 
 use std::fmt;
