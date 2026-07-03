@@ -17,7 +17,9 @@ const MAX_RETRIES: u32 = 3;
 pub struct ItunesSource {
     agent: ureq::Agent,
     min_interval: Duration,
-    last_call: Mutex<Option<Instant>>,
+    /// Earliest instant the next request may fire. Callers reserve their slot
+    /// under the lock, then sleep after releasing it.
+    next_allowed: Mutex<Instant>,
 }
 
 impl Default for ItunesSource {
@@ -36,7 +38,7 @@ impl ItunesSource {
         Self {
             agent,
             min_interval: MIN_INTERVAL,
-            last_call: Mutex::new(None),
+            next_allowed: Mutex::new(Instant::now()),
         }
     }
 
@@ -49,15 +51,23 @@ impl ItunesSource {
     }
 
     /// Space out calls to stay within iTunes' unauthenticated rate limit.
+    /// Reserves the next slot under the lock, then sleeps after releasing it, so
+    /// a concurrent caller can compute its own (later) slot without blocking on
+    /// this one's sleep. Recovers from a poisoned lock rather than panicking.
     fn throttle(&self) {
-        let mut last = self.last_call.lock().expect("throttle mutex not poisoned");
-        if let Some(t) = *last {
-            let elapsed = t.elapsed();
-            if elapsed < self.min_interval {
-                std::thread::sleep(self.min_interval - elapsed);
-            }
+        let wait = {
+            let mut next = self
+                .next_allowed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let now = Instant::now();
+            let slot = (*next).max(now);
+            *next = slot + self.min_interval;
+            slot.saturating_duration_since(now)
+        };
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
         }
-        *last = Some(Instant::now());
     }
 }
 
@@ -68,9 +78,11 @@ impl Source for ItunesSource {
 
     fn lookup(&self, query: &TrackQuery) -> Result<Vec<SourceHit>, SourceError> {
         let term = Self::search_term(query);
-        self.throttle();
         let mut attempt = 0;
         loop {
+            // Throttle every attempt (not just the first) so retries still honor
+            // the rate cap.
+            self.throttle();
             let resp = self
                 .agent
                 .get(SEARCH_ENDPOINT)
@@ -89,7 +101,17 @@ impl Source for ItunesSource {
                 continue;
             }
             if status >= 400 {
-                return Err(SourceError::Network(format!("iTunes HTTP {status}")));
+                // Include a truncated body snippet so blocks/rate-limits are
+                // actionable (mirrors the media-server client's error shape).
+                let body = resp.into_body().read_to_string().unwrap_or_default();
+                let snippet = if body.len() > 512 {
+                    format!("{}...", &body[..body.floor_char_boundary(512)])
+                } else {
+                    body
+                };
+                return Err(SourceError::Network(format!(
+                    "iTunes HTTP {status}: {snippet}"
+                )));
             }
             let body = resp
                 .into_body()
