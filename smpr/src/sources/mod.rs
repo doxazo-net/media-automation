@@ -1,9 +1,11 @@
 //! Authoritative parental-advisory source adapters and shared types.
 //!
-//! Concrete adapters (iTunes, Spotify) arrive in later milestones; this module
-//! defines the shared verdict/query/hit types and the `Source` trait, plus (via
-//! `matcher`) the pure confidence-gated matching logic.
+//! Defines the shared verdict/query/hit types and the `Source` trait, plus (via
+//! `matcher`) the pure confidence-gated matching logic. The iTunes adapter
+//! (`itunes`) implements `Source`; the Spotify adapter arrives in a later
+//! milestone.
 
+pub mod itunes;
 pub mod matcher;
 
 use std::fmt;

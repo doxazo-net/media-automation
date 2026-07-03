@@ -207,7 +207,9 @@ impl MediaServerClient {
         include_media_sources: bool,
         parent_id: Option<&str>,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
-        let mut fields = "Path,OfficialRating,AlbumArtist,Album,Genres".to_string();
+        let mut fields =
+            "Name,Path,OfficialRating,AlbumArtist,Album,Genres,RunTimeTicks,ProviderIds"
+                .to_string();
         if include_media_sources && self.server_type == ServerType::Emby {
             fields.push_str(",MediaSources");
         }

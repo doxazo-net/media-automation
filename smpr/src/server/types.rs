@@ -62,12 +62,35 @@ pub struct GenreResponse {
 #[serde(rename_all = "PascalCase")]
 pub struct AudioItemView {
     pub id: String,
+    /// Track title (Emby/Jellyfin `Name`). Needed to query external sources.
+    pub name: Option<String>,
     pub path: Option<String>,
     pub official_rating: Option<String>,
     pub album_artist: Option<String>,
     pub album: Option<String>,
     #[serde(default)]
     pub genres: Vec<String>,
+    /// Playback length in 100-nanosecond ticks (Emby/Jellyfin `RunTimeTicks`).
+    pub run_time_ticks: Option<i64>,
+    /// External provider IDs (e.g. `MusicBrainzTrack`), when tagged.
+    pub provider_ids: Option<std::collections::HashMap<String, String>>,
+}
+
+impl AudioItemView {
+    /// Track duration in whole seconds (`RunTimeTicks` are 100-ns units, so
+    /// 10,000,000 ticks per second). `None` when the server reported no length.
+    pub fn duration_s(&self) -> Option<i64> {
+        self.run_time_ticks.map(|ticks| ticks / 10_000_000)
+    }
+
+    /// The MusicBrainz recording ID Picard bakes into the file, if present.
+    /// This is the stable local match key preferred over the reported path.
+    pub fn mbid(&self) -> Option<&str> {
+        self.provider_ids
+            .as_ref()?
+            .get("MusicBrainzTrack")
+            .map(String::as_str)
+    }
 }
 
 /// Paginated response from GET /Users/{uid}/Items.
