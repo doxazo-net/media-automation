@@ -145,6 +145,16 @@ fn set_curated_missing_key_returns_false() {
 }
 
 #[test]
+fn parse_verdict_column_errors_on_unknown() {
+    // The read-side backstop: an unrecognized stored value is a loud error, not
+    // a silent coercion.
+    assert!(matches!(
+        parse_verdict_column(9, "bogus"),
+        Err(StoreError::InvalidVerdict { .. })
+    ));
+}
+
+#[test]
 fn check_constraint_rejects_invalid_verdict() {
     // Bypass the typed API to attempt storing an invalid verdict; the schema
     // CHECK constraint must reject it, so an invalid value can never reach the

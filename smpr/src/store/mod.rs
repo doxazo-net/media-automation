@@ -2,6 +2,9 @@
 //! source verdicts. Keyed by a stable per-track key (MBID when present,
 //! else the normalized path).
 
+mod error;
+pub use error::StoreError;
+
 #[cfg(test)]
 mod tests;
 
@@ -34,20 +37,20 @@ pub struct SourceStore {
 
 impl SourceStore {
     /// Open (creating if absent) a store at `path` and ensure the schema.
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
         Self::init(&conn)?;
         Ok(Self { conn })
     }
 
     #[cfg(test)]
-    pub fn open_in_memory() -> rusqlite::Result<Self> {
+    pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
         Self::init(&conn)?;
         Ok(Self { conn })
     }
 
-    fn init(conn: &Connection) -> rusqlite::Result<()> {
+    fn init(conn: &Connection) -> Result<(), StoreError> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS source_verdicts (
                 track_key        TEXT PRIMARY KEY,
@@ -68,12 +71,13 @@ impl SourceStore {
                     CHECK (curated_override IN ('explicit', 'cleaned', 'not_explicit')),
                 notes            TEXT
             );",
-        )
+        )?;
+        Ok(())
     }
 
     /// Insert or update a verdict. Deliberately does NOT overwrite
     /// `curated_override`: user curation survives re-enrichment.
-    pub fn upsert(&self, r: &VerdictRecord) -> rusqlite::Result<()> {
+    pub fn upsert(&self, r: &VerdictRecord) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO source_verdicts
                 (track_key, mbid, server_name, artist, album, title, duration_s,
@@ -110,22 +114,26 @@ impl SourceStore {
     }
 
     /// Fetch a stored row by key.
-    pub fn get(&self, track_key: &str) -> rusqlite::Result<Option<VerdictRecord>> {
-        self.conn
+    pub fn get(&self, track_key: &str) -> Result<Option<VerdictRecord>, StoreError> {
+        let raw = self
+            .conn
             .query_row(
                 "SELECT track_key, mbid, server_name, artist, album, title,
                         duration_s, source, source_track_id, source_verdict,
                         match_confidence, duration_delta_s, curated_override, notes
                  FROM source_verdicts WHERE track_key = ?1",
                 params![track_key],
-                Self::row_to_record,
+                RawRow::from_row,
             )
-            .optional()
+            .optional()?;
+        // SQLite mapping (rusqlite) is separate from verdict validation
+        // (StoreError): parse the verdict strings only after the row is loaded.
+        raw.map(RawRow::into_record).transpose()
     }
 
     /// The verdict that should drive rating: the curated override if present,
     /// else the source verdict. `None` if the track is not in the store.
-    pub fn effective_verdict(&self, track_key: &str) -> rusqlite::Result<Option<SourceVerdict>> {
+    pub fn effective_verdict(&self, track_key: &str) -> Result<Option<SourceVerdict>, StoreError> {
         Ok(self
             .get(track_key)?
             .map(|r| r.curated_override.unwrap_or(r.source_verdict)))
@@ -140,18 +148,38 @@ impl SourceStore {
         &self,
         track_key: &str,
         verdict: Option<SourceVerdict>,
-    ) -> rusqlite::Result<bool> {
+    ) -> Result<bool, StoreError> {
         let affected = self.conn.execute(
             "UPDATE source_verdicts SET curated_override = ?2 WHERE track_key = ?1",
             params![track_key, verdict.map(|v| v.as_str())],
         )?;
         Ok(affected > 0)
     }
+}
 
-    fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<VerdictRecord> {
-        let verdict_s: String = row.get(9)?;
-        let curated_s: Option<String> = row.get(12)?;
-        Ok(VerdictRecord {
+/// A row as loaded from SQLite, with the verdict columns still as raw strings.
+/// Keeps the rusqlite row-mapping closure (`from_row`) infallible-of-StoreError
+/// so verdict validation happens separately in `into_record`.
+struct RawRow {
+    track_key: String,
+    mbid: Option<String>,
+    server_name: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    title: Option<String>,
+    duration_s: Option<i64>,
+    source: String,
+    source_track_id: Option<String>,
+    source_verdict: String,
+    match_confidence: f64,
+    duration_delta_s: Option<i64>,
+    curated_override: Option<String>,
+    notes: Option<String>,
+}
+
+impl RawRow {
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Self {
             track_key: row.get(0)?,
             mbid: row.get(1)?,
             server_name: row.get(2)?,
@@ -161,30 +189,47 @@ impl SourceStore {
             duration_s: row.get(6)?,
             source: row.get(7)?,
             source_track_id: row.get(8)?,
+            source_verdict: row.get(9)?,
+            match_confidence: row.get(10)?,
+            duration_delta_s: row.get(11)?,
+            curated_override: row.get(12)?,
+            notes: row.get(13)?,
+        })
+    }
+
+    fn into_record(self) -> Result<VerdictRecord, StoreError> {
+        Ok(VerdictRecord {
+            track_key: self.track_key,
+            mbid: self.mbid,
+            server_name: self.server_name,
+            artist: self.artist,
+            album: self.album,
+            title: self.title,
+            duration_s: self.duration_s,
+            source: self.source,
+            source_track_id: self.source_track_id,
             // Fail loud on an unrecognized stored value rather than silently
             // coercing it to a verdict (which would either downgrade explicit
             // content or fabricate an R rating). A CHECK constraint prevents
             // invalid values from being stored; this is the read-side backstop.
-            source_verdict: parse_verdict_column(9, &verdict_s)?,
-            match_confidence: row.get(10)?,
-            duration_delta_s: row.get(11)?,
-            curated_override: curated_s
+            source_verdict: parse_verdict_column(9, &self.source_verdict)?,
+            match_confidence: self.match_confidence,
+            duration_delta_s: self.duration_delta_s,
+            curated_override: self
+                .curated_override
                 .map(|s| parse_verdict_column(12, &s))
                 .transpose()?,
-            notes: row.get(13)?,
+            notes: self.notes,
         })
     }
 }
 
-/// Parse a stored verdict string, returning a rusqlite conversion error (not a
+/// Parse a stored verdict string, returning `StoreError::InvalidVerdict` (not a
 /// silent default) when the value is not a recognized verdict. `column` is the
 /// 0-based result-set index, for the error message.
-fn parse_verdict_column(column: usize, value: &str) -> rusqlite::Result<SourceVerdict> {
-    SourceVerdict::parse(value).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Text,
-            format!("invalid verdict value {value:?}").into(),
-        )
+fn parse_verdict_column(column: usize, value: &str) -> Result<SourceVerdict, StoreError> {
+    SourceVerdict::parse(value).ok_or_else(|| StoreError::InvalidVerdict {
+        column,
+        value: value.to_string(),
     })
 }
