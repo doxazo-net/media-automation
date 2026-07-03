@@ -5,6 +5,11 @@
 # OS / editor noise
 .DS_Store
 
+# Merge / backup leftovers
+*.orig
+*.rej
+*.bak
+
 # Python
 __pycache__/
 *.pyc
@@ -21,8 +26,21 @@ __pycache__/
 smpr/target/
 rabsody/target/
 
+# Rust coverage artifacts (produced locally by the patch-coverage gate)
+*.profraw
+lcov.info
+cobertura.xml
+tarpaulin-report.*
+
 # Reports
 *.csv
+
+# SQLite databases (smpr authoritative-source store + WAL/SHM sidecars)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # IDE
 .vscode/
@@ -41,6 +59,9 @@ docs/superpowers/
 
 # Transient session checkpoint (resume state; never committed)
 SESSION-STATE.md
+
+# Local design ideation / someday-maybe notes (never committed)
+*.local.md
 
 # Playwright MCP browser session artifacts
 .playwright-mcp/
