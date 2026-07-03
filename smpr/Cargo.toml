@@ -28,6 +28,11 @@ inquire = "0.9"
 log = "0.4.32"
 ratatui = "0.30"
 regex = "1"
+# Pinned exactly: rusqlite >= 0.32 pulls libsqlite3-sys versions that use the
+# unstable `cfg_select` macro and fail to build on our rust-version = 1.94.
+# `bundled` compiles SQLite from source (required for the static musl release
+# target). Revisit this pin when a 1.94-compatible newer rusqlite lands.
+rusqlite = { version = "=0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.27.0"

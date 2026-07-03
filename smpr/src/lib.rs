@@ -14,6 +14,8 @@ pub mod detection;
 pub mod rating;
 pub mod report;
 pub mod server;
+pub mod sources;
+pub mod store;
 pub mod tui;
 pub mod util;
 pub mod wizard;
