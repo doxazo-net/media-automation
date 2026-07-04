@@ -278,6 +278,7 @@ fn open_authoritative_store(config: &Config) -> Option<crate::store::SourceStore
     let tier_enabled = !config.ignore_forced
         && !config.no_sources
         && config.sources.sequence.iter().any(|s| match s.as_str() {
+            "deezer" => config.sources.deezer_enabled,
             "itunes" => config.sources.itunes_enabled,
             "spotify" => config.sources.spotify_enabled,
             _ => false,
