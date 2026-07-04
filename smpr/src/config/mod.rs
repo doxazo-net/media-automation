@@ -97,7 +97,7 @@ pub struct RawReport {
 /// `[sources]` — authoritative advisory-source configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 pub struct RawSources {
-    /// Ordered middle-band detector sequence, e.g. ["itunes","spotify","lyrics","genre"].
+    /// Ordered middle-band detector sequence, e.g. ["deezer","itunes","spotify","lyrics","genre"].
     pub sequence: Option<Vec<String>>,
     pub match_min_confidence: Option<f64>,
     pub duration_tolerance_s: Option<i64>,
@@ -149,7 +149,7 @@ pub struct Config {
 /// Resolved `[sources]` config with defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourcesConfig {
-    /// Ordered middle-band detector sequence; default `itunes > spotify > lyrics > genre`.
+    /// Ordered middle-band detector sequence; default `deezer > itunes > spotify > lyrics > genre`.
     pub sequence: Vec<String>,
     /// Composite match-confidence gate (default 0.85).
     pub match_min_confidence: f64,
