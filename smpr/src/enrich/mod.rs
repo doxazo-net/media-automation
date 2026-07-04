@@ -255,9 +255,15 @@ fn scoped_items(
     // never fetches lyrics. MediaSources forces Emby to probe each media file's
     // container on disk, which is pure overhead here and, on a disk-contended
     // server, slow enough to blow the per-call timeout during the prefetch.
+    let include_media_sources = false;
     // One prefetch that honors both the incremental watermark (`since`, #257) and
     // the bounded-smoke-test cap (`limit`, #254).
-    let items = client.prefetch_impl(false, lib_scope.parent_id.as_deref(), since, limit)?;
+    let items = client.prefetch_impl(
+        include_media_sources,
+        lib_scope.parent_id.as_deref(),
+        since,
+        limit,
+    )?;
     if limit.is_some() && lib_scope.location_path.is_some() {
         log::warn!(
             "enrich --limit bounds the prefetch BEFORE the --location filter; \
