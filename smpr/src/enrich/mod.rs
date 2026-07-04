@@ -212,6 +212,7 @@ fn verdict_record(
 fn scoped_items(
     client: &MediaServerClient,
     config: &Config,
+    limit: Option<usize>,
 ) -> Result<Vec<(AudioItemView, serde_json::Value)>, MediaServerError> {
     let need_scope = config.library_name.is_some() || config.location_name.is_some();
     let libraries = if need_scope {
@@ -233,8 +234,18 @@ fn scoped_items(
         },
     };
     let include_media_sources = client.server_type() == &ServerType::Emby;
-    let items =
-        client.prefetch_audio_items(include_media_sources, lib_scope.parent_id.as_deref())?;
+    let items = client.prefetch_audio_items_limited(
+        include_media_sources,
+        lib_scope.parent_id.as_deref(),
+        limit,
+    )?;
+    if limit.is_some() && lib_scope.location_path.is_some() {
+        log::warn!(
+            "enrich --limit bounds the prefetch BEFORE the --location filter; \
+             the bounded page may contain few or no items under that location. \
+             For a quick smoke test, run --limit without --location."
+        );
+    }
     Ok(match lib_scope.location_path {
         Some(loc) => scope::filter_by_location(items, &loc),
         None => items,
@@ -252,13 +263,14 @@ pub fn enrich_workflow(
     store: Option<&SourceStore>,
     report_only: bool,
     refresh: bool,
+    limit: Option<usize>,
 ) -> Result<(EnrichSummary, Vec<EnrichRow>), MediaServerError> {
     let sources = build_sources(&config.sources);
     let params = MatchParams {
         min_confidence: config.sources.match_min_confidence,
         duration_tolerance_s: config.sources.duration_tolerance_s,
     };
-    let items = scoped_items(client, config)?;
+    let items = scoped_items(client, config, limit)?;
     log::info!("enrich: processing {} items", items.len());
 
     let mut summary = EnrichSummary::default();

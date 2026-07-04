@@ -105,6 +105,31 @@ fn jellyfin_prefetch_audio_items() {
 }
 
 #[test]
+fn emby_prefetch_audio_items_limited_respects_cap() {
+    let Some(client) = emby_client() else { return };
+    let unbounded = client.prefetch_audio_items(false, None).unwrap();
+    // Choose a cap strictly below the library size so the bound is observable;
+    // if the library has <=1 item there is nothing to bound, so skip.
+    if unbounded.len() < 2 {
+        eprintln!("library too small to exercise the limit; skipping");
+        return;
+    }
+    let cap = 1usize;
+    let bounded = client
+        .prefetch_audio_items_limited(false, None, Some(cap))
+        .unwrap();
+    assert_eq!(
+        bounded.len(),
+        cap,
+        "bounded prefetch must return exactly the cap when the library is larger"
+    );
+    assert!(
+        bounded.len() < unbounded.len(),
+        "bounded set must be smaller than the full set"
+    );
+}
+
+#[test]
 fn emby_discover_libraries() {
     let Some(client) = emby_client() else { return };
     let libs = client.discover_libraries().unwrap();
