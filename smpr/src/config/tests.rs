@@ -815,3 +815,56 @@ proptest::proptest! {
         let _ = super::parse_toml(&s);
     }
 }
+
+#[test]
+fn sources_defaults_when_absent() {
+    let raw = parse_toml("").unwrap();
+    let s = resolve_sources(&raw, None);
+    assert_eq!(s.sequence, vec!["itunes", "spotify", "lyrics", "genre"]);
+    assert_eq!(s.match_min_confidence, 0.85);
+    assert_eq!(s.duration_tolerance_s, 3);
+    assert!(s.itunes_enabled);
+    assert!(!s.spotify_enabled);
+    assert_eq!(s.store_path, std::path::PathBuf::from("smpr-sources.db"));
+}
+
+#[test]
+fn sources_parsed_and_overridden() {
+    let toml = r#"
+[sources]
+sequence = ["lyrics", "itunes"]
+match_min_confidence = 0.9
+duration_tolerance_s = 5
+[sources.itunes]
+enabled = false
+[sources.spotify]
+enabled = true
+[sources.store]
+path = "/abs/custom.db"
+"#;
+    let raw = parse_toml(toml).unwrap();
+    let s = resolve_sources(&raw, None);
+    assert_eq!(s.sequence, vec!["lyrics", "itunes"]);
+    assert_eq!(s.match_min_confidence, 0.9);
+    assert_eq!(s.duration_tolerance_s, 5);
+    assert!(!s.itunes_enabled);
+    assert!(s.spotify_enabled);
+    assert_eq!(s.store_path, std::path::PathBuf::from("/abs/custom.db"));
+}
+
+#[test]
+fn sources_store_relative_path_anchors_to_config_dir() {
+    let raw = parse_toml("[sources.store]\npath = \"db/x.db\"\n").unwrap();
+    let s = resolve_sources(&raw, Some(std::path::Path::new("/etc/smpr/config.toml")));
+    assert_eq!(s.store_path, std::path::PathBuf::from("/etc/smpr/db/x.db"));
+}
+
+#[test]
+fn sources_default_store_anchors_to_config_dir() {
+    let raw = parse_toml("").unwrap();
+    let s = resolve_sources(&raw, Some(std::path::Path::new("/etc/smpr/config.toml")));
+    assert_eq!(
+        s.store_path,
+        std::path::PathBuf::from("/etc/smpr/smpr-sources.db")
+    );
+}

@@ -434,7 +434,7 @@ fn override_match_count_helper() {
 
 // ── override precedence through rate_item (issue #236) ───────────────
 
-use crate::config::{Config, DetectionConfig, ServerType};
+use crate::config::{Config, DetectionConfig, ServerType, SourcesConfig};
 use crate::detection::DetectionEngine;
 use crate::server::MediaServerClient;
 
@@ -459,6 +459,7 @@ fn override_test_config(overrides: Vec<OverrideRule>, dry_run: bool) -> Config {
         verbose: false,
         ignore_forced: false,
         overrides,
+        sources: SourcesConfig::default(),
     }
 }
 
@@ -892,7 +893,7 @@ fn clean_lyrics_rated_g_counts_as_clean_not_explicit() {
 /// All tests are READ-ONLY (dry-run). No mutations to UAT data.
 #[cfg(test)]
 mod integration {
-    use crate::config::{Config, DetectionConfig, ServerConfig, ServerType};
+    use crate::config::{Config, DetectionConfig, ServerConfig, ServerType, SourcesConfig};
     use crate::detection::DetectionEngine;
     use crate::rating::*;
     use crate::server::MediaServerClient;
@@ -934,6 +935,7 @@ mod integration {
             verbose: false,
             ignore_forced: false,
             overrides: vec![],
+            sources: SourcesConfig::default(),
         }
     }
 

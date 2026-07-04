@@ -24,6 +24,7 @@ fn save_and_reload_config_roundtrip() {
         }),
         report: None,
         overrides: None,
+        sources: None,
     };
 
     let tmp = NamedTempFile::new().unwrap();

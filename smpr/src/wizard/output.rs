@@ -156,6 +156,7 @@ fn build_raw_config(
         general,
         report: existing.and_then(|e| e.report.clone()),
         overrides: existing.and_then(|e| e.overrides.clone()),
+        sources: None,
     }
 }
 
