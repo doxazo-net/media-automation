@@ -820,9 +820,13 @@ proptest::proptest! {
 fn sources_defaults_when_absent() {
     let raw = parse_toml("").unwrap();
     let s = resolve_sources(&raw, None);
-    assert_eq!(s.sequence, vec!["itunes", "spotify", "lyrics", "genre"]);
+    assert_eq!(
+        s.sequence,
+        vec!["deezer", "itunes", "spotify", "lyrics", "genre"]
+    );
     assert_eq!(s.match_min_confidence, 0.85);
     assert_eq!(s.duration_tolerance_s, 3);
+    assert!(s.deezer_enabled);
     assert!(s.itunes_enabled);
     assert!(!s.spotify_enabled);
     assert_eq!(s.store_path, std::path::PathBuf::from("smpr-sources.db"));
@@ -837,6 +841,8 @@ match_min_confidence = 0.9
 duration_tolerance_s = 5
 [sources.itunes]
 enabled = false
+[sources.deezer]
+enabled = false
 [sources.spotify]
 enabled = true
 [sources.store]
@@ -847,6 +853,7 @@ path = "/abs/custom.db"
     assert_eq!(s.sequence, vec!["lyrics", "itunes"]);
     assert_eq!(s.match_min_confidence, 0.9);
     assert_eq!(s.duration_tolerance_s, 5);
+    assert!(!s.deezer_enabled);
     assert!(!s.itunes_enabled);
     assert!(s.spotify_enabled);
     assert_eq!(s.store_path, std::path::PathBuf::from("/abs/custom.db"));

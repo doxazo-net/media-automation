@@ -137,6 +137,12 @@ enum Commands {
         /// overlapping scheduled/cron invocation is a no-op, not a failure.
         #[arg(long)]
         wait: bool,
+
+        /// Process at most N items (bounded smoke test). The cap applies to the
+        /// prefetch BEFORE any --location filter, so use it unscoped or with
+        /// --library only; a --location sub-path filter may leave fewer/zero items.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
     },
 
     /// Interactive setup wizard for server connection and config
@@ -213,7 +219,13 @@ fn resolve_server_type(sc: &config::ServerConfig) -> Result<config::ServerType, 
 /// the source store. The report path is the enrich CLI flag only - deliberately
 /// NOT the config-resolved `report_path`, so an unrelated `[report]` TOML section
 /// (used by rate/force/reset) can't silently flip enrich into report-only.
-fn run_enrich(cfg: &config::Config, report_path: Option<PathBuf>, refresh: bool, wait: bool) {
+fn run_enrich(
+    cfg: &config::Config,
+    report_path: Option<PathBuf>,
+    refresh: bool,
+    wait: bool,
+    limit: Option<usize>,
+) {
     let report_only = report_path.is_some();
     // Single-instance lock (issue #256): only for store-writing runs (the
     // scheduled/cron path). Report-only is a manual, store-read-free calibration
@@ -288,6 +300,7 @@ fn run_enrich(cfg: &config::Config, report_path: Option<PathBuf>, refresh: bool,
             store.as_ref(),
             report_only,
             refresh,
+            limit,
         ) {
             Ok((s, r)) => {
                 summary.matched += s.matched;
@@ -452,12 +465,13 @@ fn main() {
             common,
             refresh,
             wait,
+            limit,
         } => {
             // Enrich's report mode is driven by its own --report flag only, not
             // the config-resolved report_path (which TOML [report] can set).
             let report_path = common.report.clone().map(PathBuf::from);
             let cfg = load_config(&common, None, false, false);
-            run_enrich(&cfg, report_path, refresh, wait);
+            run_enrich(&cfg, report_path, refresh, wait, limit);
         }
         Commands::Reset { common } => {
             let cfg = load_config(&common, None, false, false);

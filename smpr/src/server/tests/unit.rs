@@ -500,3 +500,30 @@ fn audio_item_missing_ticks_and_ids_are_none() {
     assert_eq!(view.duration_s(), None);
     assert_eq!(view.mbid(), None);
 }
+
+#[test]
+fn prefetch_page_size_unbounded_is_full_page() {
+    use super::super::prefetch_page_size;
+    assert_eq!(prefetch_page_size(None), 500);
+}
+
+#[test]
+fn prefetch_page_size_small_cap_shrinks_page() {
+    use super::super::prefetch_page_size;
+    // A small bound must shrink the page so it is a single tiny request.
+    assert_eq!(prefetch_page_size(Some(5)), 5);
+    assert_eq!(prefetch_page_size(Some(1)), 1);
+}
+
+#[test]
+fn prefetch_page_size_clamps_into_1_500() {
+    use super::super::prefetch_page_size;
+    // Zero clamps up to 1 (never a zero/negative server Limit)...
+    assert_eq!(prefetch_page_size(Some(0)), 1);
+    // ...and any cap above the page size clamps down to 500.
+    assert_eq!(prefetch_page_size(Some(501)), 500);
+    assert_eq!(prefetch_page_size(Some(10_000)), 500);
+    // A huge cap clamps DOWN to the max page size (500) - clamping in usize
+    // first avoids the i64-cast wrap that would otherwise force 1-item pages.
+    assert_eq!(prefetch_page_size(Some(usize::MAX)), 500);
+}

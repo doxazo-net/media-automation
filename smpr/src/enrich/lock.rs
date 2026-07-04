@@ -45,8 +45,22 @@ impl EnrichLock {
 
 /// Derive the lockfile path from the store path: `<store>.lock`. Keyed on the
 /// store so two runs against *different* stores never block each other.
+///
+/// Best-effort canonicalizes the parent directory first, so a relative vs
+/// absolute (or symlinked) path to the *same* DB resolves to the same lockfile
+/// and the two runs mutually exclude. Canonicalization needs the parent to
+/// exist; on the first run (parent not yet created) it falls back to the raw
+/// path, which is fine because a first run has no concurrent peer to collide
+/// with (and the store's SQLite `busy_timeout` remains the backstop regardless).
 pub fn lock_path_for_store(store_path: &Path) -> PathBuf {
-    let mut s = store_path.as_os_str().to_os_string();
+    let base = match (store_path.parent(), store_path.file_name()) {
+        (Some(parent), Some(file)) => parent
+            .canonicalize()
+            .map(|p| p.join(file))
+            .unwrap_or_else(|_| store_path.to_path_buf()),
+        _ => store_path.to_path_buf(),
+    };
+    let mut s = base.into_os_string();
     s.push(".lock");
     PathBuf::from(s)
 }

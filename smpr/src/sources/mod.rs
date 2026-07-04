@@ -1,10 +1,11 @@
 //! Authoritative parental-advisory source adapters and shared types.
 //!
 //! Defines the shared verdict/query/hit types and the `Source` trait, plus (via
-//! `matcher`) the pure confidence-gated matching logic. The iTunes adapter
-//! (`itunes`) implements `Source`; the Spotify adapter arrives in a later
+//! `matcher`) the pure confidence-gated matching logic. The `deezer` and
+//! `itunes` adapters implement `Source`; the Spotify adapter arrives in a later
 //! milestone.
 
+pub mod deezer;
 pub mod itunes;
 pub mod matcher;
 

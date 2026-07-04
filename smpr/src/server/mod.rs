@@ -14,6 +14,23 @@ use serde_json::Value;
 use std::cell::OnceCell;
 use std::time::Duration;
 
+/// Resolve the server-side page `Limit` for a (possibly bounded) prefetch.
+///
+/// Unbounded (`None`) uses the full 500-item page. A bound shrinks the page to
+/// the cap so a small `--limit` is a single tiny request. The result is always
+/// in `[1, 500]`: the cap is clamped as a `usize` FIRST so a huge value (e.g.
+/// `usize::MAX`) clamps down to 500 rather than wrapping negative on the `i64`
+/// cast, and `Some(0)` clamps up to 1 so the server never receives a
+/// zero/negative `Limit`. (`Some(0)` still returns an empty set overall - the
+/// caller's `truncate(0)` discards the single fetched item.)
+pub(crate) fn prefetch_page_size(max_items: Option<usize>) -> i64 {
+    match max_items {
+        // Clamp in usize (no wrap), then cast the guaranteed-small result.
+        Some(m) => m.clamp(1, 500) as i64,
+        None => 500,
+    }
+}
+
 /// HTTP client for Emby/Jellyfin media server APIs.
 pub struct MediaServerClient {
     base_url: String,
@@ -207,6 +224,24 @@ impl MediaServerClient {
         include_media_sources: bool,
         parent_id: Option<&str>,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
+        self.prefetch_audio_items_limited(include_media_sources, parent_id, None)
+    }
+
+    /// As `prefetch_audio_items`, but stop after collecting at most `max_items`
+    /// items (used by bounded smoke-test runs, e.g. `enrich --limit`). The cap is
+    /// pushed down into the server-side `Limit` so a small bound is a single tiny
+    /// request rather than the full multi-page crawl. `None` fetches everything.
+    ///
+    /// Note the cap applies to the raw prefetch, BEFORE any client-side location
+    /// filtering (that filter runs in the caller), so a bounded run is only useful
+    /// unscoped or with a library-level `ParentId` — a `--location` sub-path filter
+    /// may reduce the bounded page to fewer (or zero) items.
+    pub fn prefetch_audio_items_limited(
+        &self,
+        include_media_sources: bool,
+        parent_id: Option<&str>,
+        max_items: Option<usize>,
+    ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
         let mut fields =
             "Name,Path,OfficialRating,AlbumArtist,Album,Genres,RunTimeTicks,ProviderIds"
                 .to_string();
@@ -220,7 +255,8 @@ impl MediaServerClient {
 
         let mut all_items = Vec::new();
         let mut start_index: i64 = 0;
-        let page_size = 500;
+        // Shrink the page to the cap so a small bound is one tiny request.
+        let page_size = prefetch_page_size(max_items);
 
         loop {
             let path = format!(
@@ -253,6 +289,12 @@ impl MediaServerClient {
                 start_index,
                 page.total_record_count
             );
+            if let Some(max) = max_items
+                && all_items.len() >= max
+            {
+                all_items.truncate(max);
+                break;
+            }
             if start_index >= page.total_record_count {
                 break;
             }
