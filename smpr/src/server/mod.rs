@@ -18,13 +18,15 @@ use std::time::Duration;
 ///
 /// Unbounded (`None`) uses the full 500-item page. A bound shrinks the page to
 /// the cap so a small `--limit` is a single tiny request. The result is always
-/// in `[1, 500]`: a huge cap is clamped down to 500, and `Some(0)` (or any cast
-/// that would wrap negative) is clamped up to 1 so the server never receives a
+/// in `[1, 500]`: the cap is clamped as a `usize` FIRST so a huge value (e.g.
+/// `usize::MAX`) clamps down to 500 rather than wrapping negative on the `i64`
+/// cast, and `Some(0)` clamps up to 1 so the server never receives a
 /// zero/negative `Limit`. (`Some(0)` still returns an empty set overall - the
 /// caller's `truncate(0)` discards the single fetched item.)
 pub(crate) fn prefetch_page_size(max_items: Option<usize>) -> i64 {
     match max_items {
-        Some(m) => (m as i64).clamp(1, 500),
+        // Clamp in usize (no wrap), then cast the guaranteed-small result.
+        Some(m) => m.clamp(1, 500) as i64,
         None => 500,
     }
 }

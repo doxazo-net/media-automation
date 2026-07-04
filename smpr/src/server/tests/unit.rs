@@ -523,6 +523,7 @@ fn prefetch_page_size_clamps_into_1_500() {
     // ...and any cap above the page size clamps down to 500.
     assert_eq!(prefetch_page_size(Some(501)), 500);
     assert_eq!(prefetch_page_size(Some(10_000)), 500);
-    // usize::MAX would wrap negative on the i64 cast; clamp must still contain it.
-    assert_eq!(prefetch_page_size(Some(usize::MAX)), 1);
+    // A huge cap clamps DOWN to the max page size (500) - clamping in usize
+    // first avoids the i64-cast wrap that would otherwise force 1-item pages.
+    assert_eq!(prefetch_page_size(Some(usize::MAX)), 500);
 }
