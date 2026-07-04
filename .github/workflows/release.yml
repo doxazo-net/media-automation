@@ -179,7 +179,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
-          TITLE: ${{ needs.setup.outputs.bin }} ${{ needs.setup.outputs.version }}
+          # Title carries a `v` (e.g. `smpr v0.5.0`) to match every historical
+          # release title (`<bin> vX.Y.Z`); the parsed `version` output is bare
+          # (no `v`) so the `v` is added here, not in the tag parse (#231).
+          TITLE: ${{ needs.setup.outputs.bin }} v${{ needs.setup.outputs.version }}
         run: |
           # Notes come from the annotated tag message (the tag is the single
           # source of truth for both version and notes).
