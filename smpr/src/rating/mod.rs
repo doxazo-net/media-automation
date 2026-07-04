@@ -62,6 +62,8 @@ pub enum Source {
     Reset,
     /// Per-song `[[overrides]]` entry (issue #236).
     Override,
+    /// Authoritative advisory source (an `Explicit` verdict cached in the store).
+    Authoritative,
 }
 
 impl Source {
@@ -73,6 +75,7 @@ impl Source {
             Self::Force => "force",
             Self::Reset => "reset",
             Self::Override => "override",
+            Self::Authoritative => "authoritative",
         }
     }
 }
@@ -235,6 +238,13 @@ pub fn rate_workflow(
         log_override_match_counts(&config.overrides, &items);
     }
 
+    // Open the authoritative-source store once if the tier is active. The tier
+    // is off when --ignore-forced or --no-sources is set, when the sequence has
+    // no source adapter, or when no store exists on disk yet (run `enrich`
+    // first). A store that fails to open degrades to "tier inactive", not an
+    // error - the rate run continues on lyrics/genre.
+    let store = open_authoritative_store(config);
+
     let mut results = Vec::new();
     for (view, raw) in &items {
         let force_rating = if config.ignore_forced {
@@ -249,11 +259,50 @@ pub fn rate_workflow(
             view,
             raw,
             force_rating,
+            store.as_ref(),
             &server_config.name,
         )?;
         results.push(result);
     }
     Ok(results)
+}
+
+/// Open the authoritative-source store for the rate tier, or `None` when the
+/// tier is disabled or unavailable. Never creates the store: an absent file
+/// means "no enrich run yet", so the tier stays off rather than fabricating an
+/// empty DB during a rate run.
+fn open_authoritative_store(config: &Config) -> Option<crate::store::SourceStore> {
+    // A source counts as active only if it is BOTH in the sequence AND enabled -
+    // the same rule enrich's build_sources uses, so rate never reads verdicts a
+    // disabled/out-of-sequence source would never have written.
+    let tier_enabled = !config.ignore_forced
+        && !config.no_sources
+        && config.sources.sequence.iter().any(|s| match s.as_str() {
+            "itunes" => config.sources.itunes_enabled,
+            "spotify" => config.sources.spotify_enabled,
+            _ => false,
+        });
+    if !tier_enabled {
+        return None;
+    }
+    let path = &config.sources.store_path;
+    if !path.exists() {
+        log::info!(
+            "authoritative tier: no source store at {} (run `enrich` first); skipping",
+            path.display()
+        );
+        return None;
+    }
+    match crate::store::SourceStore::open(path) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log::warn!(
+                "authoritative tier: failed to open store at {}: {e}; skipping",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// True when the server has any library- or location-level `force_rating`
@@ -285,6 +334,10 @@ fn log_override_match_counts(
     }
 }
 
+// Context-heavy per-item entry point; the parameters are all distinct inputs
+// (client, config, engine, item view + raw, the resolved force rating, the
+// optional authoritative store, and the server label) with no natural grouping.
+#[allow(clippy::too_many_arguments)]
 fn rate_item(
     client: &MediaServerClient,
     config: &Config,
@@ -292,6 +345,7 @@ fn rate_item(
     view: &AudioItemView,
     raw: &Value,
     force_rating: Option<&str>,
+    store: Option<&crate::store::SourceStore>,
     server_name: &str,
 ) -> Result<ItemResult, RatingError> {
     let label = view.path.as_deref().unwrap_or(&view.id);
@@ -326,6 +380,43 @@ fn rate_item(
             has_lyrics: false,
             server_name: server_name.to_string(),
         });
+    }
+
+    // Authoritative source tier (positive-only): an `Explicit` verdict cached in
+    // the store sets R, overriding even clean lyrics. Only `Explicit`
+    // short-circuits; any other verdict (or none) falls through to lyrics. The
+    // store is `None` when the tier is disabled (--no-sources / --ignore-forced /
+    // no store on disk), so this is skipped entirely then.
+    if !config.ignore_forced
+        && !config.no_sources
+        && let Some(store) = store
+    {
+        let key = crate::enrich::track_key_for_item(view);
+        match store.effective_verdict(&key) {
+            Ok(Some(crate::sources::SourceVerdict::Explicit)) => {
+                let act = action::decide_rating_action("R", prev, config.overwrite, config.dry_run);
+                let act = if matches!(act, RatingAction::Set) {
+                    action::apply_rating(client, &view.id, "R", label)?
+                } else {
+                    act
+                };
+                return Ok(ItemResult {
+                    item_id: view.id.clone(),
+                    path: view.path.clone(),
+                    artist: view.album_artist.clone(),
+                    album: view.album.clone(),
+                    tier: Some("R".to_string()),
+                    matched_words: vec![],
+                    previous_rating: prev.map(String::from),
+                    action: act,
+                    source: Source::Authoritative,
+                    has_lyrics: false,
+                    server_name: server_name.to_string(),
+                });
+            }
+            Ok(_) => {} // cleaned / not_explicit / no verdict -> fall through to lyrics
+            Err(e) => log::warn!("authoritative store read failed for '{key}': {e}"),
+        }
     }
 
     // Fetch lyrics

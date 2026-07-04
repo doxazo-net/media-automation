@@ -98,6 +98,10 @@ enum Commands {
         /// Ignore per-library force_rating from config; evaluate lyrics normally
         #[arg(long)]
         ignore_forced: bool,
+
+        /// Skip the authoritative-source tier (do not consult the enrich store)
+        #[arg(long)]
+        no_sources: bool,
     },
 
     /// Set a fixed rating on all tracks in scope (no lyrics evaluation)
@@ -150,6 +154,7 @@ fn build_cli_input(
     common: &CommonOpts,
     overwrite: Option<bool>,
     ignore_forced: bool,
+    no_sources: bool,
 ) -> config::CliInput {
     config::CliInput {
         config_path: common.config.as_ref().map(PathBuf::from),
@@ -164,6 +169,7 @@ fn build_cli_input(
         location: common.location.clone(),
         verbose: common.verbose,
         ignore_forced,
+        no_sources,
     }
 }
 
@@ -171,8 +177,9 @@ fn load_config(
     common: &CommonOpts,
     overwrite: Option<bool>,
     ignore_forced: bool,
+    no_sources: bool,
 ) -> config::Config {
-    let cli_input = build_cli_input(common, overwrite, ignore_forced);
+    let cli_input = build_cli_input(common, overwrite, ignore_forced, no_sources);
     config::Config::load_from_paths(&cli_input).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         process::exit(1);
@@ -391,8 +398,9 @@ fn main() {
             common,
             overwrite,
             ignore_forced,
+            no_sources,
         } => {
-            let cfg = load_config(&common, overwrite.resolve(), ignore_forced);
+            let cfg = load_config(&common, overwrite.resolve(), ignore_forced, no_sources);
             run_workflows(&cfg, &Workflow::Rate);
         }
         Commands::Force {
@@ -400,18 +408,18 @@ fn main() {
             common,
             overwrite,
         } => {
-            let cfg = load_config(&common, overwrite.resolve(), false);
+            let cfg = load_config(&common, overwrite.resolve(), false, false);
             run_workflows(&cfg, &Workflow::Force(target_rating));
         }
         Commands::Enrich { common, refresh } => {
             // Enrich's report mode is driven by its own --report flag only, not
             // the config-resolved report_path (which TOML [report] can set).
             let report_path = common.report.clone().map(PathBuf::from);
-            let cfg = load_config(&common, None, false);
+            let cfg = load_config(&common, None, false, false);
             run_enrich(&cfg, report_path, refresh);
         }
         Commands::Reset { common } => {
-            let cfg = load_config(&common, None, false);
+            let cfg = load_config(&common, None, false, false);
             run_workflows(&cfg, &Workflow::Reset);
         }
         Commands::Configure {

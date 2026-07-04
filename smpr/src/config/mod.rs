@@ -136,6 +136,8 @@ pub struct Config {
     pub location_name: Option<String>,
     pub verbose: bool,
     pub ignore_forced: bool,
+    /// Disable the authoritative-source rate tier (`--no-sources`).
+    pub no_sources: bool,
     /// Per-song rating overrides, highest precedence (override > force > lyrics/genre).
     pub overrides: Vec<OverrideRule>,
     /// Resolved authoritative-source config (matcher params, enabled sources,
@@ -355,6 +357,7 @@ pub struct CliInput {
     pub location: Option<String>,
     pub verbose: bool,
     pub ignore_forced: bool,
+    pub no_sources: bool,
 }
 
 // ── Config path auto-discovery ─────────────────────────────────────
@@ -544,6 +547,7 @@ impl Config {
             location_name: cli.location.clone(),
             verbose: cli.verbose,
             ignore_forced: cli.ignore_forced,
+            no_sources: cli.no_sources,
             overrides,
             sources: resolve_sources(&raw, resolved_config_path.as_deref()),
         })
