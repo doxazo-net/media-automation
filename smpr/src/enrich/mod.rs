@@ -2,7 +2,7 @@
 //! matches (via `sources::matcher`), and cache the resulting verdicts in the
 //! store - or, in report mode, emit a calibration CSV without writing.
 
-use crate::config::{Config, ServerConfig, ServerType, SourcesConfig};
+use crate::config::{Config, ServerConfig, SourcesConfig};
 use crate::rating::LibraryScope;
 use crate::rating::scope;
 use crate::server::types::AudioItemView;
@@ -250,7 +250,12 @@ fn scoped_items(
             library_name: None,
         },
     };
-    let include_media_sources = client.server_type() == &ServerType::Emby;
+    // enrich never requests MediaSources. It builds its source queries from
+    // title/artist/album/duration/MBID only (see `track_query_from_item`); it
+    // never fetches lyrics. MediaSources forces Emby to probe each media file's
+    // container on disk, which is pure overhead here and, on a disk-contended
+    // server, slow enough to blow the per-call timeout during the prefetch.
+    let include_media_sources = false;
     // One prefetch that honors both the incremental watermark (`since`, #257) and
     // the bounded-smoke-test cap (`limit`, #254).
     let items = client.prefetch_impl(
