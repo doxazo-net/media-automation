@@ -44,8 +44,15 @@ impl MediaServerClient {
     /// Create a new client. `server_type` must be resolved before construction
     /// (via `detect_server_type` or TOML override).
     pub fn new(base_url: String, api_key: String, server_type: ServerType) -> Self {
+        // 60s per call: this agent serves the bulk item prefetch (pages of up to
+        // 500), the item GET/POST rating round-trip, and lyrics fetches. On a
+        // large library (tens of thousands of tracks) hosted on a busy server -
+        // mid-import, mid-scan, or just restarted - a single 500-item page can
+        // take well over a tight 15s timeout, which would abort the whole run.
+        // The one-shot helper agents below (detect_server_type, wizard auth) hit
+        // small endpoints and keep their shorter timeouts.
         let agent = ureq::Agent::config_builder()
-            .timeout_per_call(Some(Duration::from_secs(15)))
+            .timeout_per_call(Some(Duration::from_secs(60)))
             .http_status_as_error(false)
             .build()
             .new_agent();
