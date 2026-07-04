@@ -33,6 +33,7 @@ fn sample_config() -> RawConfig {
         }),
         report: None,
         overrides: None,
+        sources: None,
     }
 }
 

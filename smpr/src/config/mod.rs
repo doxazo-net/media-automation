@@ -8,7 +8,7 @@ mod tests;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 pub struct RawConfig {
@@ -18,6 +18,8 @@ pub struct RawConfig {
     pub report: Option<RawReport>,
     /// Per-song rating overrides (`[[overrides]]` array-of-tables).
     pub overrides: Option<Vec<RawOverride>>,
+    /// Authoritative advisory-source config (`[sources]`).
+    pub sources: Option<RawSources>,
 }
 
 /// One `[[overrides]]` entry: force or exempt a track whose path matches `match`.
@@ -92,6 +94,28 @@ pub struct RawReport {
     pub output_path: Option<String>,
 }
 
+/// `[sources]` — authoritative advisory-source configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+pub struct RawSources {
+    /// Ordered middle-band detector sequence, e.g. ["itunes","spotify","lyrics","genre"].
+    pub sequence: Option<Vec<String>>,
+    pub match_min_confidence: Option<f64>,
+    pub duration_tolerance_s: Option<i64>,
+    pub itunes: Option<RawSourceToggle>,
+    pub spotify: Option<RawSourceToggle>,
+    pub store: Option<RawStore>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RawSourceToggle {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RawStore {
+    pub path: Option<String>,
+}
+
 pub fn parse_toml(content: &str) -> Result<RawConfig, toml::de::Error> {
     toml::from_str(content)
 }
@@ -114,6 +138,80 @@ pub struct Config {
     pub ignore_forced: bool,
     /// Per-song rating overrides, highest precedence (override > force > lyrics/genre).
     pub overrides: Vec<OverrideRule>,
+    /// Resolved authoritative-source config (matcher params, enabled sources,
+    /// store path, detector sequence).
+    pub sources: SourcesConfig,
+}
+
+/// Resolved `[sources]` config with defaults applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourcesConfig {
+    /// Ordered middle-band detector sequence; default `itunes > spotify > lyrics > genre`.
+    pub sequence: Vec<String>,
+    /// Composite match-confidence gate (default 0.85).
+    pub match_min_confidence: f64,
+    /// Duration tolerance in seconds for the match gate (default 3).
+    pub duration_tolerance_s: i64,
+    /// iTunes source enabled (default true; no credentials needed).
+    pub itunes_enabled: bool,
+    /// Spotify source enabled (default false; dormant without credentials).
+    pub spotify_enabled: bool,
+    /// SQLite store path (default `smpr-sources.db` next to the resolved config).
+    pub store_path: PathBuf,
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        Self {
+            sequence: default_source_sequence(),
+            match_min_confidence: 0.85,
+            duration_tolerance_s: 3,
+            itunes_enabled: true,
+            spotify_enabled: false,
+            store_path: PathBuf::from("smpr-sources.db"),
+        }
+    }
+}
+
+fn default_source_sequence() -> Vec<String> {
+    ["itunes", "spotify", "lyrics", "genre"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Resolve `[sources]`, defaulting the store path next to the resolved config
+/// (relative paths are anchored there too; absolute paths are used as-is).
+fn resolve_sources(raw: &RawConfig, config_path: Option<&Path>) -> SourcesConfig {
+    let config_dir = config_path.and_then(Path::parent);
+    let anchor = |p: PathBuf| -> PathBuf {
+        match config_dir {
+            Some(dir) if p.is_relative() => dir.join(p),
+            _ => p,
+        }
+    };
+    let s = raw.sources.as_ref();
+    let store_path = s
+        .and_then(|s| s.store.as_ref())
+        .and_then(|st| st.path.as_ref())
+        .map(|p| anchor(PathBuf::from(p)))
+        .unwrap_or_else(|| anchor(PathBuf::from("smpr-sources.db")));
+    SourcesConfig {
+        sequence: s
+            .and_then(|s| s.sequence.clone())
+            .unwrap_or_else(default_source_sequence),
+        match_min_confidence: s.and_then(|s| s.match_min_confidence).unwrap_or(0.85),
+        duration_tolerance_s: s.and_then(|s| s.duration_tolerance_s).unwrap_or(3),
+        itunes_enabled: s
+            .and_then(|s| s.itunes.as_ref())
+            .and_then(|t| t.enabled)
+            .unwrap_or(true),
+        spotify_enabled: s
+            .and_then(|s| s.spotify.as_ref())
+            .and_then(|t| t.enabled)
+            .unwrap_or(false),
+        store_path,
+    }
 }
 
 /// A resolved per-song override. `match_key` is pre-normalized (lowercased,
@@ -447,6 +545,7 @@ impl Config {
             verbose: cli.verbose,
             ignore_forced: cli.ignore_forced,
             overrides,
+            sources: resolve_sources(&raw, resolved_config_path.as_deref()),
         })
     }
 }
