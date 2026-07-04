@@ -78,7 +78,7 @@ Always run `cargo fmt` and `cargo clippy -- -D warnings` before committing - pre
 
 Clap-derived parser with four subcommands:
 
-- **`rate`** — fetch lyrics, classify content, set ratings. Flags: `--library`, `--location`, `--server`, `--dry-run`, `--report`, `--overwrite`/`--skip-existing`, `--ignore-forced`, plus config/env flags.
+- **`rate`** — fetch lyrics, classify content, set ratings. Flags: `--library`, `--location`, `--server`, `--dry-run`, `--report`, `--overwrite`/`--skip-existing`, `--ignore-forced`, `--limit N` (bounded smoke test — caps the prefetch BEFORE the `--location` filter, same as `enrich --limit`; use it unscoped or with `--library` only), plus config/env flags.
 - **`force <RATING>`** — set a fixed rating on all tracks in scope without lyrics evaluation. Same scoping and overwrite flags as `rate`.
 - **`reset`** — remove `OfficialRating` from all tracks in scope.
 - **`configure`** — launch the interactive setup wizard.

@@ -189,6 +189,7 @@ pub fn rate_workflow(
     config: &Config,
     server_config: &ServerConfig,
     engine: &DetectionEngine,
+    limit: Option<usize>,
 ) -> Result<Vec<ItemResult>, RatingError> {
     // Discover libraries once when either scoping or per-item force resolution
     // needs them. A full run with no scope flags and no configured force skips
@@ -214,8 +215,21 @@ pub fn rate_workflow(
     };
 
     let include_media_sources = client.server_type() == &ServerType::Emby;
-    let items =
-        client.prefetch_audio_items(include_media_sources, lib_scope.parent_id.as_deref())?;
+    // `limit` (bounded smoke test, mirroring `enrich --limit`) caps the prefetch
+    // BEFORE the location filter, so a bounded run is only useful unscoped or with
+    // --library; a --location sub-path filter may leave fewer or zero items.
+    if limit.is_some() && lib_scope.location_path.is_some() {
+        log::warn!(
+            "rate --limit bounds the prefetch BEFORE the --location filter; \
+             the bounded page may contain few or no items under that location. \
+             For a quick smoke test, run --limit without --location."
+        );
+    }
+    let items = client.prefetch_audio_items_limited(
+        include_media_sources,
+        lib_scope.parent_id.as_deref(),
+        limit,
+    )?;
     let items = if let Some(ref loc_path) = lib_scope.location_path {
         scope::filter_by_location(items, loc_path)
     } else {

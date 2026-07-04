@@ -1213,7 +1213,7 @@ mod integration {
         let cfg = dry_run_config();
         let srv = test_server_config();
         let engine = DetectionEngine::new(&cfg.detection);
-        let results = rate_workflow(&client, &cfg, &srv, &engine).unwrap();
+        let results = rate_workflow(&client, &cfg, &srv, &engine, None).unwrap();
         assert!(!results.is_empty(), "expected at least one item");
         // All should be dry-run (no Set or Cleared)
         for r in &results {

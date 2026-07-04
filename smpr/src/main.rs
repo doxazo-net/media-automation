@@ -102,6 +102,12 @@ enum Commands {
         /// Skip the authoritative-source tier (do not consult the enrich store)
         #[arg(long)]
         no_sources: bool,
+
+        /// Process at most N items (bounded smoke test). The cap applies to the
+        /// prefetch BEFORE any --location filter, so use it unscoped or with
+        /// --library only; a --location sub-path filter may leave fewer/zero items.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
     },
 
     /// Set a fixed rating on all tracks in scope (no lyrics evaluation)
@@ -357,7 +363,9 @@ fn run_enrich(
     }
 }
 
-fn run_workflows(cfg: &config::Config, workflow: &Workflow) {
+/// `limit` bounds the prefetch for the rate workflow only (bounded smoke test,
+/// mirroring `enrich --limit`); force/reset always pass `None`.
+fn run_workflows(cfg: &config::Config, workflow: &Workflow, limit: Option<usize>) {
     let multi = cfg.servers.len() > 1;
     let mut all_results: Vec<rating::ItemResult> = Vec::new();
     let mut had_failure = false;
@@ -390,7 +398,7 @@ fn run_workflows(cfg: &config::Config, workflow: &Workflow) {
         let results = match workflow {
             Workflow::Rate => {
                 let engine = detection::DetectionEngine::new(&cfg.detection);
-                rating::rate_workflow(&client, cfg, server_config, &engine)
+                rating::rate_workflow(&client, cfg, server_config, &engine, limit)
             }
             Workflow::Force(target_rating) => {
                 rating::force_workflow(&client, cfg, server_config, target_rating)
@@ -458,9 +466,10 @@ fn main() {
             overwrite,
             ignore_forced,
             no_sources,
+            limit,
         } => {
             let cfg = load_config(&common, overwrite.resolve(), ignore_forced, no_sources);
-            run_workflows(&cfg, &Workflow::Rate);
+            run_workflows(&cfg, &Workflow::Rate, limit);
         }
         Commands::Force {
             rating: target_rating,
@@ -468,7 +477,7 @@ fn main() {
             overwrite,
         } => {
             let cfg = load_config(&common, overwrite.resolve(), false, false);
-            run_workflows(&cfg, &Workflow::Force(target_rating));
+            run_workflows(&cfg, &Workflow::Force(target_rating), None);
         }
         Commands::Enrich {
             common,
@@ -485,7 +494,7 @@ fn main() {
         }
         Commands::Reset { common } => {
             let cfg = load_config(&common, None, false, false);
-            run_workflows(&cfg, &Workflow::Reset);
+            run_workflows(&cfg, &Workflow::Reset, None);
         }
         Commands::Configure {
             config,
