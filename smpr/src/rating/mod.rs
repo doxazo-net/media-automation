@@ -272,14 +272,16 @@ pub fn rate_workflow(
 /// means "no enrich run yet", so the tier stays off rather than fabricating an
 /// empty DB during a rate run.
 fn open_authoritative_store(config: &Config) -> Option<crate::store::SourceStore> {
+    // A source counts as active only if it is BOTH in the sequence AND enabled -
+    // the same rule enrich's build_sources uses, so rate never reads verdicts a
+    // disabled/out-of-sequence source would never have written.
     let tier_enabled = !config.ignore_forced
         && !config.no_sources
-        && config
-            .sources
-            .sequence
-            .iter()
-            .any(|s| matches!(s.as_str(), "itunes" | "spotify"))
-        && (config.sources.itunes_enabled || config.sources.spotify_enabled);
+        && config.sources.sequence.iter().any(|s| match s.as_str() {
+            "itunes" => config.sources.itunes_enabled,
+            "spotify" => config.sources.spotify_enabled,
+            _ => false,
+        });
     if !tier_enabled {
         return None;
     }
