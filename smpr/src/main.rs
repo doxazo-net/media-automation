@@ -1,4 +1,4 @@
-use smpr::{config, detection, rating, report, server, tui, wizard};
+use smpr::{config, detection, enrich, rating, report, server, store, tui, wizard};
 
 use clap::{Args, Parser, Subcommand};
 use log::LevelFilter;
@@ -118,6 +118,17 @@ enum Commands {
         common: CommonOpts,
     },
 
+    /// Query authoritative sources for in-scope tracks and cache verdicts.
+    /// With `--report <path>` it writes a calibration CSV instead of the store.
+    Enrich {
+        #[command(flatten)]
+        common: CommonOpts,
+
+        /// Re-query tracks already cached in the store
+        #[arg(long)]
+        refresh: bool,
+    },
+
     /// Interactive setup wizard for server connection and config
     Configure {
         /// Path to TOML config file
@@ -175,25 +186,124 @@ enum Workflow {
     Reset,
 }
 
+/// Resolve a server's type from config or by unauthenticated detection.
+fn resolve_server_type(sc: &config::ServerConfig) -> Result<config::ServerType, String> {
+    match sc.server_type.clone() {
+        Some(t) => Ok(t),
+        None => server::detect_server_type(&sc.url)
+            .map_err(|e| format!("failed to detect server type for '{}': {e}", sc.name)),
+    }
+}
+
+/// Enrich all servers' in-scope tracks. With an explicit `--report` path it runs
+/// in report-only mode (calibration CSV, no store writes); otherwise it populates
+/// the source store. The report path is the enrich CLI flag only - deliberately
+/// NOT the config-resolved `report_path`, so an unrelated `[report]` TOML section
+/// (used by rate/force/reset) can't silently flip enrich into report-only.
+fn run_enrich(cfg: &config::Config, report_path: Option<PathBuf>, refresh: bool) {
+    let report_only = report_path.is_some();
+    // Report-only runs never touch the store, so don't open (or create) it -
+    // a read-only / unwritable store path must not fail a calibration pass.
+    let store = if report_only {
+        None
+    } else {
+        match store::SourceStore::open(&cfg.sources.store_path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "Error: failed to open source store at {}: {e}",
+                    cfg.sources.store_path.display()
+                );
+                process::exit(1);
+            }
+        }
+    };
+
+    let mut summary = enrich::EnrichSummary::default();
+    let mut rows: Vec<enrich::EnrichRow> = Vec::new();
+    let mut had_failure = false;
+
+    for server_config in &cfg.servers {
+        let server_type = match resolve_server_type(server_config) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                had_failure = true;
+                continue;
+            }
+        };
+        let client = server::MediaServerClient::new(
+            server_config.url.clone(),
+            server_config.api_key.clone(),
+            server_type,
+        );
+        match enrich::enrich_workflow(
+            &client,
+            cfg,
+            server_config,
+            store.as_ref(),
+            report_only,
+            refresh,
+        ) {
+            Ok((s, r)) => {
+                summary.matched += s.matched;
+                summary.no_match += s.no_match;
+                summary.cached_skipped += s.cached_skipped;
+                summary.no_query_skipped += s.no_query_skipped;
+                rows.extend(r);
+            }
+            Err(e) => {
+                eprintln!("Error: enrich for '{}' failed: {e}", server_config.name);
+                had_failure = true;
+            }
+        }
+    }
+
+    if let Some(path) = &report_path {
+        match enrich::write_enrich_report(&rows, path) {
+            Ok(()) => eprintln!(
+                "Wrote enrich report ({} rows) to {}",
+                rows.len(),
+                path.display()
+            ),
+            Err(e) => {
+                eprintln!("Error: writing enrich report failed: {e}");
+                had_failure = true;
+            }
+        }
+    }
+
+    eprintln!(
+        "Enrich: {} matched, {} no-match, {} cached-skipped, {} no-title-skipped{}",
+        summary.matched,
+        summary.no_match,
+        summary.cached_skipped,
+        summary.no_query_skipped,
+        if report_only {
+            " (report-only; store not written)"
+        } else {
+            ""
+        }
+    );
+
+    if had_failure {
+        process::exit(1);
+    }
+}
+
 fn run_workflows(cfg: &config::Config, workflow: &Workflow) {
     let multi = cfg.servers.len() > 1;
     let mut all_results: Vec<rating::ItemResult> = Vec::new();
     let mut had_failure = false;
 
     for server_config in &cfg.servers {
-        let server_type = match server_config.server_type.clone() {
-            Some(t) => t,
-            None => match server::detect_server_type(&server_config.url) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!(
-                        "Error: failed to detect server type for '{}': {e}",
-                        server_config.name
-                    );
-                    had_failure = true;
-                    continue;
-                }
-            },
+        let server_type = match resolve_server_type(server_config) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                had_failure = true;
+                continue;
+            }
         };
 
         let label = if multi {
@@ -261,7 +371,8 @@ fn main() {
     let verbose = match &cli.command {
         Commands::Rate { common, .. }
         | Commands::Force { common, .. }
-        | Commands::Reset { common } => common.verbose,
+        | Commands::Reset { common }
+        | Commands::Enrich { common, .. } => common.verbose,
         Commands::Configure { verbose, .. } => *verbose,
     };
 
@@ -291,6 +402,13 @@ fn main() {
         } => {
             let cfg = load_config(&common, overwrite.resolve(), false);
             run_workflows(&cfg, &Workflow::Force(target_rating));
+        }
+        Commands::Enrich { common, refresh } => {
+            // Enrich's report mode is driven by its own --report flag only, not
+            // the config-resolved report_path (which TOML [report] can set).
+            let report_path = common.report.clone().map(PathBuf::from);
+            let cfg = load_config(&common, None, false);
+            run_enrich(&cfg, report_path, refresh);
         }
         Commands::Reset { common } => {
             let cfg = load_config(&common, None, false);

@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod detection;
+pub mod enrich;
 pub mod rating;
 pub mod report;
 pub mod server;
