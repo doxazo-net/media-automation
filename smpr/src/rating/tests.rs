@@ -458,6 +458,7 @@ fn override_test_config(overrides: Vec<OverrideRule>, dry_run: bool) -> Config {
         location_name: None,
         verbose: false,
         ignore_forced: false,
+        no_sources: false,
         overrides,
         sources: SourcesConfig::default(),
     }
@@ -480,11 +481,236 @@ fn override_forces_rating_over_lyrics() {
     );
     let engine = DetectionEngine::new(&cfg.detection);
     let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
-    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, None, "srv").unwrap();
     assert_eq!(res.source, Source::Override);
     assert_eq!(res.action, RatingAction::DryRun);
     assert_eq!(res.tier.as_deref(), Some("R"));
     assert!(!res.has_lyrics);
+}
+
+fn store_with_verdict(
+    key: &str,
+    verdict: crate::sources::SourceVerdict,
+) -> crate::store::SourceStore {
+    let store = crate::store::SourceStore::open_in_memory().unwrap();
+    store
+        .upsert(&crate::store::VerdictRecord {
+            track_key: key.to_string(),
+            mbid: None,
+            server_name: None,
+            artist: None,
+            album: None,
+            title: None,
+            duration_s: None,
+            source: "itunes".to_string(),
+            source_track_id: None,
+            source_verdict: verdict,
+            match_confidence: 1.0,
+            duration_delta_s: None,
+            curated_override: None,
+            notes: None,
+        })
+        .unwrap();
+    store
+}
+
+#[test]
+fn authoritative_explicit_sets_r() {
+    // An Explicit store verdict sets R via the authoritative tier, short-circuiting
+    // before lyrics (dry-run + bogus client guarantee no network call).
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Explicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_eq!(res.source, Source::Authoritative);
+    assert_eq!(res.tier.as_deref(), Some("R"));
+    assert_eq!(res.action, RatingAction::DryRun);
+}
+
+#[test]
+fn authoritative_not_explicit_falls_through() {
+    // A NotExplicit verdict does not short-circuit; the item falls through to the
+    // (stream-less, network-free) no-lyrics path - not the authoritative tier.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::NotExplicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_ne!(res.source, Source::Authoritative);
+}
+
+#[test]
+fn force_rating_outranks_authoritative() {
+    // force_rating is resolved before the authoritative tier, so it wins even when
+    // an Explicit verdict is present.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Explicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        Some("G"),
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_eq!(res.source, Source::Force);
+    assert_eq!(res.tier.as_deref(), Some("G"));
+}
+
+#[test]
+fn ignore_forced_bypasses_authoritative() {
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let mut cfg = override_test_config(vec![], true);
+    cfg.ignore_forced = true;
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Explicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_ne!(res.source, Source::Authoritative);
+}
+
+#[test]
+fn none_store_skips_authoritative() {
+    // No store (--no-sources / no enrich run) -> the tier is skipped entirely.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, None, "srv").unwrap();
+    assert_ne!(res.source, Source::Authoritative);
+}
+
+#[test]
+fn authoritative_cleaned_falls_through() {
+    // A Cleaned verdict (radio edit) is not R; it falls through to lyrics.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Cleaned);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_ne!(res.source, Source::Authoritative);
+}
+
+#[test]
+fn override_outranks_authoritative() {
+    // A per-song override wins over an Explicit store verdict (override > authoritative).
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(
+        vec![OverrideRule {
+            match_key: "artist/album".into(),
+            rating: Some("G".into()),
+            skip: false,
+        }],
+        true,
+    );
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Explicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_eq!(res.source, Source::Override);
+    assert_eq!(res.tier.as_deref(), Some("G"));
+}
+
+#[test]
+fn curated_override_explicit_fires_at_rate() {
+    // A user curation of Explicit (over a source NotExplicit) drives R at rate
+    // time - effective_verdict honors the curated override.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let cfg = override_test_config(vec![], true);
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::NotExplicit);
+    store
+        .set_curated(&key, Some(crate::sources::SourceVerdict::Explicit))
+        .unwrap();
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_eq!(res.source, Source::Authoritative);
+    assert_eq!(res.tier.as_deref(), Some("R"));
 }
 
 #[test]
@@ -504,7 +730,7 @@ fn override_skip_leaves_rating_untouched() {
     let engine = DetectionEngine::new(&cfg.detection);
     let (mut view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
     view.official_rating = Some("R".into());
-    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, None, "srv").unwrap();
     assert_eq!(res.source, Source::Override);
     assert_eq!(res.action, RatingAction::Skipped);
     assert_eq!(res.previous_rating.as_deref(), Some("R"));
@@ -530,7 +756,7 @@ fn ignore_forced_bypasses_override() {
     cfg.ignore_forced = true;
     let engine = DetectionEngine::new(&cfg.detection);
     let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
-    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, "srv").unwrap();
+    let res = rate_item(&client, &cfg, &engine, &view, &raw, None, None, "srv").unwrap();
     assert_eq!(res.source, Source::Lyrics);
     assert!(!res.has_lyrics);
 }
@@ -934,6 +1160,7 @@ mod integration {
             location_name: None,
             verbose: false,
             ignore_forced: false,
+            no_sources: false,
             overrides: vec![],
             sources: SourcesConfig::default(),
         }
