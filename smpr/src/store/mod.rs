@@ -11,6 +11,13 @@ mod tests;
 use crate::sources::SourceVerdict;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
+use std::time::Duration;
+
+/// Wait up to this long for a competing writer's SQLite lock before returning
+/// `SQLITE_BUSY`. Belt-and-suspenders alongside the enrich single-instance lock
+/// (issue #256): even if two processes touch the store, writes serialize
+/// gracefully instead of erroring immediately.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `enrich_meta` key for a server's incremental-prefetch watermark. Namespaced
 /// by server so distinct servers keep independent watermarks in one store.
@@ -45,6 +52,7 @@ impl SourceStore {
     /// Open (creating if absent) a store at `path` and ensure the schema.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         Self::init(&conn)?;
         Ok(Self { conn })
     }

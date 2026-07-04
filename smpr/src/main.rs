@@ -138,6 +138,18 @@ enum Commands {
         /// watermark on unscoped runs. Ignored in report mode.
         #[arg(long)]
         incremental: bool,
+
+        /// If another enrich run holds the single-instance lock, wait for it to
+        /// finish instead of skipping this run. Default: skip (exit 0), so an
+        /// overlapping scheduled/cron invocation is a no-op, not a failure.
+        #[arg(long)]
+        wait: bool,
+
+        /// Process at most N items (bounded smoke test). The cap applies to the
+        /// prefetch BEFORE any --location filter, so use it unscoped or with
+        /// --library only; a --location sub-path filter may leave fewer/zero items.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
     },
 
     /// Interactive setup wizard for server connection and config
@@ -219,8 +231,41 @@ fn run_enrich(
     report_path: Option<PathBuf>,
     refresh: bool,
     incremental: bool,
+    wait: bool,
+    limit: Option<usize>,
 ) {
     let report_only = report_path.is_some();
+    // Single-instance lock (issue #256): only for store-writing runs (the
+    // scheduled/cron path). Report-only is a manual, store-read-free calibration
+    // tool and is intentionally not locked. Acquire BEFORE opening the store so
+    // overlapping writers never both reach it. The guard is held for the whole
+    // run; dropping it (function return / process exit) releases the OS lock.
+    let _enrich_lock = if report_only {
+        None
+    } else {
+        match enrich::lock::acquire(&cfg.sources.store_path, wait) {
+            Ok(Some(guard)) => Some(guard),
+            Ok(None) => {
+                // Another enrich run holds the lock and --wait was not given:
+                // skip cleanly (exit 0) so a cron overlap is a no-op, not a
+                // failure that alarms the scheduler.
+                eprintln!(
+                    "Another enrich run is in progress (lock held at {}); skipping. \
+                     Use --wait to block instead.",
+                    enrich::lock::lock_path_for_store(&cfg.sources.store_path).display()
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Error: failed to acquire enrich lock at {}: {e}",
+                    enrich::lock::lock_path_for_store(&cfg.sources.store_path).display()
+                );
+                process::exit(1);
+            }
+        }
+    };
+
     // Report-only runs never touch the store, so don't open (or create) it -
     // a read-only / unwritable store path must not fail a calibration pass.
     let store = if report_only {
@@ -264,6 +309,7 @@ fn run_enrich(
             report_only,
             refresh,
             incremental,
+            limit,
         ) {
             Ok((s, r)) => {
                 summary.matched += s.matched;
@@ -428,12 +474,14 @@ fn main() {
             common,
             refresh,
             incremental,
+            wait,
+            limit,
         } => {
             // Enrich's report mode is driven by its own --report flag only, not
             // the config-resolved report_path (which TOML [report] can set).
             let report_path = common.report.clone().map(PathBuf::from);
             let cfg = load_config(&common, None, false, false);
-            run_enrich(&cfg, report_path, refresh, incremental);
+            run_enrich(&cfg, report_path, refresh, incremental, wait, limit);
         }
         Commands::Reset { common } => {
             let cfg = load_config(&common, None, false, false);

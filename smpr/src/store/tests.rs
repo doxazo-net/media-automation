@@ -193,6 +193,20 @@ fn watermark_round_trips_and_is_per_server() {
 }
 
 #[test]
+fn open_sets_busy_timeout() {
+    // A file-backed open() must configure SQLite's busy_timeout (issue #256) so
+    // a competing writer waits rather than erroring immediately. PRAGMA reports
+    // the timeout in milliseconds.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SourceStore::open(&dir.path().join("s.db")).unwrap();
+    let ms: i64 = store
+        .conn
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(ms, 10_000, "busy_timeout should be 10s (10000ms)");
+}
+
+#[test]
 fn check_constraint_rejects_invalid_verdict() {
     // Bypass the typed API to attempt storing an invalid verdict; the schema
     // CHECK constraint must reject it, so an invalid value can never reach the

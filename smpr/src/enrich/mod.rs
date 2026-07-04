@@ -7,11 +7,14 @@ use crate::rating::LibraryScope;
 use crate::rating::scope;
 use crate::server::types::AudioItemView;
 use crate::server::{MediaServerClient, MediaServerError};
+use crate::sources::deezer::DeezerSource;
 use crate::sources::itunes::ItunesSource;
 use crate::sources::matcher::{self, MatchParams};
 use crate::sources::{Source, SourceHit, SourceVerdict, TrackQuery};
 use crate::store::{SourceStore, VerdictRecord};
 use std::path::Path;
+
+pub mod lock;
 
 #[cfg(test)]
 mod tests;
@@ -186,6 +189,7 @@ fn build_sources(cfg: &SourcesConfig) -> Vec<Box<dyn Source>> {
     let mut sources: Vec<Box<dyn Source>> = Vec::new();
     for name in &cfg.sequence {
         match name.as_str() {
+            "deezer" if cfg.deezer_enabled => sources.push(Box::new(DeezerSource::new())),
             "itunes" if cfg.itunes_enabled => sources.push(Box::new(ItunesSource::new())),
             // "spotify" lands in a later milestone (dormant adapter).
             _ => {}
@@ -225,6 +229,7 @@ fn scoped_items(
     client: &MediaServerClient,
     config: &Config,
     since: Option<&str>,
+    limit: Option<usize>,
 ) -> Result<Vec<(AudioItemView, serde_json::Value)>, MediaServerError> {
     let need_scope = config.library_name.is_some() || config.location_name.is_some();
     let libraries = if need_scope {
@@ -246,13 +251,21 @@ fn scoped_items(
         },
     };
     let include_media_sources = client.server_type() == &ServerType::Emby;
-    let parent = lib_scope.parent_id.as_deref();
-    let items = match since {
-        Some(watermark) => {
-            client.prefetch_audio_items_since(include_media_sources, parent, watermark)?
-        }
-        None => client.prefetch_audio_items(include_media_sources, parent)?,
-    };
+    // One prefetch that honors both the incremental watermark (`since`, #257) and
+    // the bounded-smoke-test cap (`limit`, #254).
+    let items = client.prefetch_impl(
+        include_media_sources,
+        lib_scope.parent_id.as_deref(),
+        since,
+        limit,
+    )?;
+    if limit.is_some() && lib_scope.location_path.is_some() {
+        log::warn!(
+            "enrich --limit bounds the prefetch BEFORE the --location filter; \
+             the bounded page may contain few or no items under that location. \
+             For a quick smoke test, run --limit without --location."
+        );
+    }
     Ok(match lib_scope.location_path {
         Some(loc) => scope::filter_by_location(items, &loc),
         None => items,
@@ -263,6 +276,7 @@ fn scoped_items(
 /// row is emitted for every queryable item (title-less items are skipped);
 /// otherwise matches are upserted to the store and cached items are skipped
 /// unless `refresh`.
+#[allow(clippy::too_many_arguments)]
 pub fn enrich_workflow(
     client: &MediaServerClient,
     config: &Config,
@@ -271,6 +285,7 @@ pub fn enrich_workflow(
     report_only: bool,
     refresh: bool,
     incremental: bool,
+    limit: Option<usize>,
 ) -> Result<(EnrichSummary, Vec<EnrichRow>), MediaServerError> {
     let sources = build_sources(&config.sources);
     let params = MatchParams {
@@ -281,11 +296,20 @@ pub fn enrich_workflow(
     // Incremental prefetch (issue #257): fetch only items newer than the stored
     // watermark. Only meaningful for a write-mode run with a store; report-only
     // calibration always fetches the full scope. No watermark yet => full crawl
-    // (the initial backfill, which then records the watermark below).
+    // (the initial backfill, which then records the watermark below). A read
+    // failure is distinguished from a genuine first run so the logs aren't
+    // misleading during ops (Copilot review, PR #259).
     let scoped = config.library_name.is_some() || config.location_name.is_some();
     let since: Option<String> = if incremental && !report_only {
         match store.map(|s| s.get_watermark(&server_config.name)) {
-            Some(Ok(w)) => w,
+            Some(Ok(Some(w))) => Some(w),
+            Some(Ok(None)) => {
+                log::info!(
+                    "enrich: no watermark for '{}'; full crawl (initial backfill)",
+                    server_config.name
+                );
+                None
+            }
             Some(Err(e)) => {
                 log::warn!(
                     "enrich: watermark read failed for '{}': {e}; doing a full crawl",
@@ -298,14 +322,8 @@ pub fn enrich_workflow(
     } else {
         None
     };
-    if incremental && !report_only && since.is_none() {
-        log::info!(
-            "enrich: no watermark for '{}'; full crawl (initial backfill)",
-            server_config.name
-        );
-    }
 
-    let items = scoped_items(client, config, since.as_deref())?;
+    let items = scoped_items(client, config, since.as_deref(), limit)?;
     log::info!("enrich: processing {} items", items.len());
 
     let mut summary = EnrichSummary::default();
@@ -381,10 +399,13 @@ pub fn enrich_workflow(
     // retries; surface that so it is not a silent stall.
     if let Some(store) = store {
         if should_advance_watermark(report_only, scoped, persist_failed) {
+            // Pick the chronologically-latest DateCreated via ts_key (not a raw
+            // string max), so mixed fractional-second precision can't record a
+            // watermark that isn't actually the newest (Codoki review, PR #259).
             if let Some(max) = items
                 .iter()
                 .filter_map(|(v, _)| v.date_created.as_deref())
-                .max()
+                .max_by(|a, b| crate::server::ts_key(a).cmp(&crate::server::ts_key(b)))
                 && let Err(e) = store.set_watermark(&server_config.name, max)
             {
                 log::warn!(

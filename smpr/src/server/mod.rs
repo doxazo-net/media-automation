@@ -14,6 +14,23 @@ use serde_json::Value;
 use std::cell::OnceCell;
 use std::time::Duration;
 
+/// Resolve the server-side page `Limit` for a (possibly bounded) prefetch.
+///
+/// Unbounded (`None`) uses the full 500-item page. A bound shrinks the page to
+/// the cap so a small `--limit` is a single tiny request. The result is always
+/// in `[1, 500]`: the cap is clamped as a `usize` FIRST so a huge value (e.g.
+/// `usize::MAX`) clamps down to 500 rather than wrapping negative on the `i64`
+/// cast, and `Some(0)` clamps up to 1 so the server never receives a
+/// zero/negative `Limit`. (`Some(0)` still returns an empty set overall - the
+/// caller's `truncate(0)` discards the single fetched item.)
+pub(crate) fn prefetch_page_size(max_items: Option<usize>) -> i64 {
+    match max_items {
+        // Clamp in usize (no wrap), then cast the guaranteed-small result.
+        Some(m) => m.clamp(1, 500) as i64,
+        None => 500,
+    }
+}
+
 /// HTTP client for Emby/Jellyfin media server APIs.
 pub struct MediaServerClient {
     base_url: String,
@@ -207,7 +224,7 @@ impl MediaServerClient {
         include_media_sources: bool,
         parent_id: Option<&str>,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
-        self.prefetch_impl(include_media_sources, parent_id, None)
+        self.prefetch_impl(include_media_sources, parent_id, None, None)
     }
 
     /// Incremental prefetch (issue #257): only items whose `DateCreated` is at or
@@ -225,14 +242,36 @@ impl MediaServerClient {
         parent_id: Option<&str>,
         since: &str,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
-        self.prefetch_impl(include_media_sources, parent_id, Some(since))
+        self.prefetch_impl(include_media_sources, parent_id, Some(since), None)
     }
 
-    fn prefetch_impl(
+    /// As `prefetch_audio_items`, but stop after collecting at most `max_items`
+    /// items (used by bounded smoke-test runs, e.g. `enrich --limit`). The cap is
+    /// pushed down into the server-side `Limit` so a small bound is a single tiny
+    /// request rather than the full multi-page crawl. `None` fetches everything.
+    ///
+    /// Note the cap applies to the raw prefetch, BEFORE any client-side location
+    /// filtering (that filter runs in the caller), so a bounded run is only useful
+    /// unscoped or with a library-level `ParentId` — a `--location` sub-path filter
+    /// may reduce the bounded page to fewer (or zero) items.
+    pub fn prefetch_audio_items_limited(
+        &self,
+        include_media_sources: bool,
+        parent_id: Option<&str>,
+        max_items: Option<usize>,
+    ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
+        self.prefetch_impl(include_media_sources, parent_id, None, max_items)
+    }
+
+    /// Shared prefetch driver: paginates audio items, optionally bounded by an
+    /// incremental `since` watermark (#257) and/or a hard `max_items` cap (#254).
+    /// `pub(crate)` so the enrich workflow can request both bounds in one call.
+    pub(crate) fn prefetch_impl(
         &self,
         include_media_sources: bool,
         parent_id: Option<&str>,
         since: Option<&str>,
+        max_items: Option<usize>,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
         let mut fields =
             "Name,Path,OfficialRating,AlbumArtist,Album,Genres,RunTimeTicks,ProviderIds,DateCreated"
@@ -253,7 +292,8 @@ impl MediaServerClient {
 
         let mut all_items = Vec::new();
         let mut start_index: i64 = 0;
-        let page_size = 500;
+        // Shrink the page to the cap so a small bound is one tiny request.
+        let page_size = prefetch_page_size(max_items);
 
         loop {
             let path = format!(
@@ -285,20 +325,25 @@ impl MediaServerClient {
                     .iter()
                     .map(|(v, _)| v.date_created.as_deref())
                     .collect();
-                // The early-stop is only sound if the server honored
-                // SortBy=DateCreated DESC. If a page is not non-increasing, the
-                // sort was ignored and the watermark stop could silently miss
-                // items - warn loudly rather than under-fetch quietly.
-                if !is_descending(&dates) {
+                // The watermark early-stop is only SOUND if the server honored
+                // SortBy=DateCreated DESC. If a page is not non-increasing, a
+                // newer item could sit after an older one, so cutting/stopping
+                // would silently miss items. In that case DON'T cut or stop -
+                // fall back to keeping the whole page and continuing full
+                // pagination this run (over-fetch, never under-fetch).
+                if is_descending(&dates) {
+                    let (cut, hit) = watermark_cut(&dates, watermark);
+                    all_items.extend(pairs.into_iter().take(cut));
+                    hit
+                } else {
                     log::warn!(
                         "incremental prefetch: server did not return DateCreated in \
-                         descending order; the watermark early-stop may miss items. \
-                         Re-run a full (non-incremental) enrich to be safe."
+                         descending order; falling back to a full crawl this run to \
+                         avoid missing items."
                     );
+                    all_items.extend(pairs);
+                    false
                 }
-                let (cut, hit) = watermark_cut(&dates, watermark);
-                all_items.extend(pairs.into_iter().take(cut));
-                hit
             } else {
                 all_items.extend(pairs);
                 false
@@ -310,6 +355,13 @@ impl MediaServerClient {
                 start_index,
                 page.total_record_count
             );
+            // Hard cap (--limit): stop as soon as the collected count reaches it.
+            if let Some(max) = max_items
+                && all_items.len() >= max
+            {
+                all_items.truncate(max);
+                break;
+            }
             // Stop once the watermark boundary is crossed (older items follow in
             // DESC order) or the server's full set is exhausted.
             if boundary_hit || start_index >= page.total_record_count {
@@ -464,6 +516,33 @@ impl MediaServerClient {
     }
 }
 
+/// Normalize a `DateCreated` timestamp into a fixed-width key whose lexicographic
+/// order equals chronological order (issue #257). Emby/Jellyfin emit UTC (`...Z`)
+/// but may vary fractional-second precision; a raw string compare then misorders
+/// e.g. `...:00.100Z` (newer) vs `...:00Z` (older). Dropping the `Z` and padding
+/// the fractional part to a fixed 9 digits makes the compare chronological. A
+/// value not in this shape (e.g. a non-`Z` offset) is returned as-is; the
+/// `is_descending` guard then catches any residual disorder and forces a full
+/// crawl rather than an unsound early stop.
+pub(crate) fn ts_key(s: &str) -> String {
+    let body = s.strip_suffix('Z').unwrap_or(s);
+    // Bail (return raw) on anything but a plain `...THH:MM:SS[.frac]` UTC value,
+    // so we never fabricate an ordering for an unexpected format.
+    if body.contains(['+']) || body.matches(':').count() < 2 {
+        return s.to_string();
+    }
+    match body.split_once('.') {
+        Some((base, frac)) => {
+            let mut f: String = frac.chars().take(9).collect();
+            while f.len() < 9 {
+                f.push('0');
+            }
+            format!("{base}.{f}")
+        }
+        None => format!("{body}.000000000"),
+    }
+}
+
 /// Given a `DateCreated`-descending page and a watermark, decide how many
 /// leading items to keep and whether the older-than-watermark boundary was
 /// crossed (issue #257). Returns `(keep_count, hit_boundary)`.
@@ -473,11 +552,13 @@ impl MediaServerClient {
 /// page is sorted descending, everything from there on is older, so pagination
 /// can stop. An item with no `DateCreated` is kept and never triggers the
 /// boundary, so a stray null value never silently drops items or halts the
-/// crawl early.
+/// crawl early. Comparison is via `ts_key` so mixed fractional-second precision
+/// orders chronologically, not lexicographically.
 pub(crate) fn watermark_cut(dates: &[Option<&str>], since: &str) -> (usize, bool) {
+    let since_key = ts_key(since);
     for (i, d) in dates.iter().enumerate() {
         if let Some(v) = d
-            && *v < since
+            && ts_key(v) < since_key
         {
             return (i, true);
         }
@@ -487,17 +568,19 @@ pub(crate) fn watermark_cut(dates: &[Option<&str>], since: &str) -> (usize, bool
 
 /// Whether a page's `DateCreated` values are non-increasing (the order the
 /// incremental early-stop relies on). `None` values are ignored (they carry no
-/// order); only adjacent present values are compared. Used as a loud-failure
-/// guard, not for control flow.
+/// order); only adjacent present values are compared (via `ts_key`, so mixed
+/// precision doesn't create false disorder). Used as a correctness guard: a
+/// non-descending page forces a full crawl for that run.
 pub(crate) fn is_descending(dates: &[Option<&str>]) -> bool {
-    let mut last: Option<&str> = None;
+    let mut last: Option<String> = None;
     for d in dates.iter().flatten() {
-        if let Some(prev) = last
-            && *d > prev
+        let key = ts_key(d);
+        if let Some(prev) = &last
+            && key > *prev
         {
             return false;
         }
-        last = Some(d);
+        last = Some(key);
     }
     true
 }

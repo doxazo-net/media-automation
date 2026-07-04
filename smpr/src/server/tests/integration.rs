@@ -105,6 +105,30 @@ fn jellyfin_prefetch_audio_items() {
 }
 
 #[test]
+fn emby_prefetch_audio_items_limited_respects_cap() {
+    let Some(client) = emby_client() else { return };
+    // Compare two small caps directly rather than doing a full unbounded crawl
+    // (which is slow on a large library and just to learn its size). Each cap is
+    // a single tiny request. A cap returns at most `cap` items, and exactly `cap`
+    // when the library is larger; comparing 1 vs 2 proves the bound is applied.
+    let one = client
+        .prefetch_audio_items_limited(false, None, Some(1))
+        .unwrap();
+    let two = client
+        .prefetch_audio_items_limited(false, None, Some(2))
+        .unwrap();
+    assert!(one.len() <= 1, "cap of 1 must return at most 1 item");
+    assert!(two.len() <= 2, "cap of 2 must return at most 2 items");
+    if two.len() < 2 {
+        eprintln!("library too small (<2 items) to fully exercise the cap; skipping");
+        return;
+    }
+    // Library has >=2 items: each cap returns exactly its bound.
+    assert_eq!(one.len(), 1, "cap of 1 must return exactly 1 item");
+    assert_eq!(two.len(), 2, "cap of 2 must return exactly 2 items");
+}
+
+#[test]
 fn emby_discover_libraries() {
     let Some(client) = emby_client() else { return };
     let libs = client.discover_libraries().unwrap();
