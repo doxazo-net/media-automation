@@ -388,6 +388,7 @@ fn rate_item(
     // store is `None` when the tier is disabled (--no-sources / --ignore-forced /
     // no store on disk), so this is skipped entirely then.
     if !config.ignore_forced
+        && !config.no_sources
         && let Some(store) = store
     {
         let key = crate::enrich::track_key_for_item(view);

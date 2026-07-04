@@ -629,6 +629,32 @@ fn none_store_skips_authoritative() {
 }
 
 #[test]
+fn no_sources_bypasses_tier_even_with_store() {
+    // --no-sources must disable the tier even when a store with an Explicit
+    // verdict is passed directly to rate_item.
+    let client =
+        MediaServerClient::new("http://127.0.0.1:9".into(), "key".into(), ServerType::Emby);
+    let mut cfg = override_test_config(vec![], true);
+    cfg.no_sources = true;
+    let engine = DetectionEngine::new(&cfg.detection);
+    let (view, raw) = audio_item("x", "/music/Artist/Album/01. song.flac");
+    let key = crate::enrich::track_key_for_item(&view);
+    let store = store_with_verdict(&key, crate::sources::SourceVerdict::Explicit);
+    let res = rate_item(
+        &client,
+        &cfg,
+        &engine,
+        &view,
+        &raw,
+        None,
+        Some(&store),
+        "srv",
+    )
+    .unwrap();
+    assert_ne!(res.source, Source::Authoritative);
+}
+
+#[test]
 fn authoritative_cleaned_falls_through() {
     // A Cleaned verdict (radio edit) is not R; it falls through to lyrics.
     let client =
