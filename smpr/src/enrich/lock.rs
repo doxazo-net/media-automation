@@ -173,6 +173,13 @@ mod tests {
     // the same physical DB via the symlinked name vs the real name must derive
     // the *same* lockfile, or two concurrent runs would not mutually exclude
     // (issue #260 - canonicalizing only the parent dir misses this case).
+    // Ignored on Windows: creating a symlink there needs Developer Mode / admin,
+    // so `symlink_file` panics for an unprivileged local `cargo test` (CI is
+    // ubuntu-only). The behavior under test is OS-agnostic path canonicalization.
+    #[cfg_attr(
+        windows,
+        ignore = "symlink creation requires Developer Mode/admin on Windows"
+    )]
     #[test]
     fn symlinked_db_filename_shares_lockfile_with_real_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -190,7 +197,12 @@ mod tests {
 
     // End-to-end: a lock held via the real path is seen as held when a second
     // run acquires via the symlinked filename (the actual mutual-exclusion the
-    // lockfile coalescing buys us).
+    // lockfile coalescing buys us). Ignored on Windows for the same symlink-
+    // privilege reason as the test above.
+    #[cfg_attr(
+        windows,
+        ignore = "symlink creation requires Developer Mode/admin on Windows"
+    )]
     #[test]
     fn symlinked_db_filename_mutually_excludes() {
         let dir = tempfile::tempdir().unwrap();
