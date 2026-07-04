@@ -4,6 +4,21 @@ Automatically rate music tracks on your Emby or Jellyfin server. Fetches lyrics,
 detects explicit content, and sets parental ratings (R / PG-13 / G) so you can
 filter what plays on shared devices.
 
+## Compatibility
+
+**Emby and Jellyfin are both first-class** — the server type is auto-detected
+from the server itself, so the same config, commands, and setup wizard work
+against either (override with `type = "emby"` or `type = "jellyfin"` in config
+if you ever need to). The two share the same code paths; only the auth header
+and the lyrics endpoint differ by server type. Each has been validated against a
+live server — Emby in day-to-day production use, and Jellyfin end-to-end
+(detection, both auth flows, lyrics fetch and parse, R / PG-13 / G
+classification, genre fallback, and the rating write round-trip). Multiple
+servers of either kind can be configured and rated in a single run.
+
+The config examples below use an Emby server label, but nothing in them is
+Emby-specific; point the URL at a Jellyfin server and it just works.
+
 ## Installation
 
 ### Download
