@@ -39,6 +39,12 @@ jobs:
           if [ -z "$version" ]; then
             echo "::error::empty version parsed from tag '$ref'"; exit 1
           fi
+          # The prefix strip already removes the `v` (smpr-v0.5.0 -> 0.5.0); a
+          # leading `v` here means a malformed tag (e.g. smpr-vv0.5.0), which
+          # would render a double-`v` title (`smpr vv0.5.0`). Fail fast instead.
+          case "$version" in
+            v*) echo "::error::parsed version '$version' has a leading 'v' (tag '$ref' should be <bin>-vX.Y.Z, not <bin>-vvX.Y.Z)"; exit 1 ;;
+          esac
           bin_upper="$(printf '%s' "$bin" | tr '[:lower:]' '[:upper:]')"
           {
             echo "bin=$bin"
@@ -179,7 +185,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
-          TITLE: ${{ needs.setup.outputs.bin }} ${{ needs.setup.outputs.version }}
+          # Title carries a `v` (e.g. `smpr v0.5.0`) to match every historical
+          # release title (`<bin> vX.Y.Z`); the parsed `version` output is bare
+          # (no `v`) so the `v` is added here, not in the tag parse (#231).
+          TITLE: ${{ needs.setup.outputs.bin }} v${{ needs.setup.outputs.version }}
         run: |
           # Notes come from the annotated tag message (the tag is the single
           # source of truth for both version and notes).

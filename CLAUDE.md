@@ -254,7 +254,8 @@ GitHub Actions workflows in `.github/workflows/`:
   - **Setup**: parses the tag → `bin` (crate dir) + `version` (prefix stripped)
   - **Check**: lint + test gate for that crate (ubuntu-only)
   - **Build**: cross-compile matrix — Linux (musl static), macOS Intel, macOS Apple Silicon, Windows; passes `{BIN}_VERSION_OVERRIDE=<version>` so the binary embeds the tag version
-  - **Release**: title `<bin> <version>`, notes from the **annotated tag message** (`--notes-from-tag`)
+  - **Release**: title `<bin> v<version>` (e.g. `smpr v0.5.0` — the `v` is added in the workflow, since the parsed `version` output is bare), notes from the **annotated tag message** (`--notes-from-tag`)
+  - **Web ordering caveat**: GitHub's Releases page ranks by a semver parsed from the tag name (not the release title) without stripping the `<bin>-` prefix, so the namespaced `smpr-v*` tags can sort inconsistently against the four legacy bare `v0.x` tags. This is cosmetic and self-corrects as the legacy tags scroll off the first page; `gh release list` and "Latest" are always correct. Renaming the legacy tags would orphan existing links, so it is intentionally not done (#231).
 
 ### Releasing (tag-only, no PR, no version bump)
 
