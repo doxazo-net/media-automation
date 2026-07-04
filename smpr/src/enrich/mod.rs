@@ -14,6 +14,8 @@ use crate::sources::{Source, SourceHit, SourceVerdict, TrackQuery};
 use crate::store::{SourceStore, VerdictRecord};
 use std::path::Path;
 
+pub mod lock;
+
 #[cfg(test)]
 mod tests;
 
