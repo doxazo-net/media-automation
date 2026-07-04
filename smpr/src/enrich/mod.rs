@@ -7,6 +7,7 @@ use crate::rating::LibraryScope;
 use crate::rating::scope;
 use crate::server::types::AudioItemView;
 use crate::server::{MediaServerClient, MediaServerError};
+use crate::sources::deezer::DeezerSource;
 use crate::sources::itunes::ItunesSource;
 use crate::sources::matcher::{self, MatchParams};
 use crate::sources::{Source, SourceHit, SourceVerdict, TrackQuery};
@@ -174,6 +175,7 @@ fn build_sources(cfg: &SourcesConfig) -> Vec<Box<dyn Source>> {
     let mut sources: Vec<Box<dyn Source>> = Vec::new();
     for name in &cfg.sequence {
         match name.as_str() {
+            "deezer" if cfg.deezer_enabled => sources.push(Box::new(DeezerSource::new())),
             "itunes" if cfg.itunes_enabled => sources.push(Box::new(ItunesSource::new())),
             // "spotify" lands in a later milestone (dormant adapter).
             _ => {}

@@ -101,6 +101,7 @@ pub struct RawSources {
     pub sequence: Option<Vec<String>>,
     pub match_min_confidence: Option<f64>,
     pub duration_tolerance_s: Option<i64>,
+    pub deezer: Option<RawSourceToggle>,
     pub itunes: Option<RawSourceToggle>,
     pub spotify: Option<RawSourceToggle>,
     pub store: Option<RawStore>,
@@ -154,6 +155,9 @@ pub struct SourcesConfig {
     pub match_min_confidence: f64,
     /// Duration tolerance in seconds for the match gate (default 3).
     pub duration_tolerance_s: i64,
+    /// Deezer source enabled (default true; no credentials needed, and unlike
+    /// iTunes it actually returns explicit flags for labeled catalog).
+    pub deezer_enabled: bool,
     /// iTunes source enabled (default true; no credentials needed).
     pub itunes_enabled: bool,
     /// Spotify source enabled (default false; dormant without credentials).
@@ -168,6 +172,7 @@ impl Default for SourcesConfig {
             sequence: default_source_sequence(),
             match_min_confidence: 0.85,
             duration_tolerance_s: 3,
+            deezer_enabled: true,
             itunes_enabled: true,
             spotify_enabled: false,
             store_path: PathBuf::from("smpr-sources.db"),
@@ -176,7 +181,10 @@ impl Default for SourcesConfig {
 }
 
 fn default_source_sequence() -> Vec<String> {
-    ["itunes", "spotify", "lyrics", "genre"]
+    // Deezer first: it actually returns explicit flags where the iTunes Search
+    // API does not. Reconcile is positive-wins regardless of order, but this is
+    // the intended precedence for which adapters run.
+    ["deezer", "itunes", "spotify", "lyrics", "genre"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -204,6 +212,10 @@ fn resolve_sources(raw: &RawConfig, config_path: Option<&Path>) -> SourcesConfig
             .unwrap_or_else(default_source_sequence),
         match_min_confidence: s.and_then(|s| s.match_min_confidence).unwrap_or(0.85),
         duration_tolerance_s: s.and_then(|s| s.duration_tolerance_s).unwrap_or(3),
+        deezer_enabled: s
+            .and_then(|s| s.deezer.as_ref())
+            .and_then(|t| t.enabled)
+            .unwrap_or(true),
         itunes_enabled: s
             .and_then(|s| s.itunes.as_ref())
             .and_then(|t| t.enabled)

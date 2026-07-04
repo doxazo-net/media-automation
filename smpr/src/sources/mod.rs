@@ -5,6 +5,7 @@
 //! (`itunes`) implements `Source`; the Spotify adapter arrives in a later
 //! milestone.
 
+pub mod deezer;
 pub mod itunes;
 pub mod matcher;
 
