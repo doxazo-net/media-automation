@@ -16,10 +16,11 @@
 //!   report-only calibration mode is manual and intentionally unlocked, so it
 //!   can still issue remote API calls concurrently - the write path is what the
 //!   lock serializes.
-//! - The lock is keyed on the store *path string*: two configs naming the same
-//!   physical file via different strings (relative vs absolute) get different
-//!   lockfiles and would not mutually exclude. The store's SQLite `busy_timeout`
-//!   is the write-serialization backstop for that case.
+//! - The lock is keyed on the *canonicalized* store path, so two configs naming
+//!   the same physical file via different strings (relative vs absolute, a
+//!   symlinked parent dir, or a symlinked DB filename) resolve to the same
+//!   lockfile once the DB exists. The store's SQLite `busy_timeout` remains the
+//!   write-serialization backstop for the first-run window before the DB exists.
 //! - `flock` on a network filesystem (NFS/SMB) may be a no-op; the intended
 //!   deployment keeps the store on local disk next to the binary.
 
@@ -46,20 +47,28 @@ impl EnrichLock {
 /// Derive the lockfile path from the store path: `<store>.lock`. Keyed on the
 /// store so two runs against *different* stores never block each other.
 ///
-/// Best-effort canonicalizes the parent directory first, so a relative vs
-/// absolute (or symlinked) path to the *same* DB resolves to the same lockfile
-/// and the two runs mutually exclude. Canonicalization needs the parent to
-/// exist; on the first run (parent not yet created) it falls back to the raw
-/// path, which is fine because a first run has no concurrent peer to collide
-/// with (and the store's SQLite `busy_timeout` remains the backstop regardless).
+/// Best-effort canonicalizes so two path strings naming the *same* physical DB
+/// resolve to the same lockfile and the two runs mutually exclude:
+///
+/// - When the DB already exists, canonicalize the **full** store path. This
+///   resolves a symlinked DB *filename* too (`store.db` -> `real-store.db`), so
+///   a run reaching the DB via either name shares one lockfile (issue #260 -
+///   canonicalizing only the parent missed this).
+/// - When the DB does not yet exist (first run), fall back to canonicalizing the
+///   parent directory and keeping the raw filename. This still coalesces a
+///   relative vs absolute (or parent-symlinked) path; a first run has no
+///   concurrent peer to collide with anyway, and the store's SQLite
+///   `busy_timeout` remains the write-serialization backstop regardless.
 pub fn lock_path_for_store(store_path: &Path) -> PathBuf {
-    let base = match (store_path.parent(), store_path.file_name()) {
-        (Some(parent), Some(file)) => parent
-            .canonicalize()
-            .map(|p| p.join(file))
-            .unwrap_or_else(|_| store_path.to_path_buf()),
-        _ => store_path.to_path_buf(),
-    };
+    let base = store_path.canonicalize().unwrap_or_else(|_| {
+        match (store_path.parent(), store_path.file_name()) {
+            (Some(parent), Some(file)) => parent
+                .canonicalize()
+                .map(|p| p.join(file))
+                .unwrap_or_else(|_| store_path.to_path_buf()),
+            _ => store_path.to_path_buf(),
+        }
+    });
     let mut s = base.into_os_string();
     s.push(".lock");
     PathBuf::from(s)
@@ -149,5 +158,53 @@ mod tests {
         let guard = acquire(&nested, false).unwrap();
         assert!(guard.is_some());
         assert!(lock_path_for_store(&nested).exists());
+    }
+
+    #[cfg(unix)]
+    fn symlink(original: &Path, link: &Path) {
+        std::os::unix::fs::symlink(original, link).unwrap();
+    }
+    #[cfg(windows)]
+    fn symlink(original: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(original, link).unwrap();
+    }
+
+    // The DB filename itself is a symlink (store.db -> real-store.db). Reaching
+    // the same physical DB via the symlinked name vs the real name must derive
+    // the *same* lockfile, or two concurrent runs would not mutually exclude
+    // (issue #260 - canonicalizing only the parent dir misses this case).
+    #[test]
+    fn symlinked_db_filename_shares_lockfile_with_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-store.db");
+        std::fs::File::create(&real).unwrap();
+        let link = dir.path().join("store.db");
+        symlink(&real, &link);
+
+        assert_eq!(
+            lock_path_for_store(&link),
+            lock_path_for_store(&real),
+            "a symlinked DB filename must resolve to the same lockfile as the real path"
+        );
+    }
+
+    // End-to-end: a lock held via the real path is seen as held when a second
+    // run acquires via the symlinked filename (the actual mutual-exclusion the
+    // lockfile coalescing buys us).
+    #[test]
+    fn symlinked_db_filename_mutually_excludes() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-store.db");
+        std::fs::File::create(&real).unwrap();
+        let link = dir.path().join("store.db");
+        symlink(&real, &link);
+
+        let held = acquire(&real, false).unwrap();
+        assert!(held.is_some(), "first acquire via real path should succeed");
+        let via_link = acquire(&link, false).unwrap();
+        assert!(
+            via_link.is_none(),
+            "acquire via the symlinked filename must see the lock already held"
+        );
     }
 }
