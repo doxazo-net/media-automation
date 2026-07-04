@@ -9,10 +9,12 @@ filter what plays on shared devices.
 **Emby and Jellyfin are both first-class** — the server type is auto-detected
 from the server itself, so the same config, commands, and setup wizard work
 against either (override with `type = "emby"` or `type = "jellyfin"` in config
-if you ever need to). Every path — server detection, authentication (API key or
-wizard username/password), library discovery, lyrics fetch, detection, and the
-rating write-back — is exercised end-to-end against both. Multiple servers of
-either kind can be configured and rated in a single run.
+if you ever need to). The two share the same code paths; only the auth header
+and the lyrics endpoint differ by server type. Each has been validated against a
+live server — Emby in day-to-day production use, and Jellyfin end-to-end
+(detection, both auth flows, lyrics fetch and parse, R / PG-13 / G
+classification, genre fallback, and the rating write round-trip). Multiple
+servers of either kind can be configured and rated in a single run.
 
 The config examples below use an Emby server label, but nothing in them is
 Emby-specific; point the URL at a Jellyfin server and it just works.
