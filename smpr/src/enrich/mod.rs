@@ -123,6 +123,18 @@ fn normalize_path(path: &str) -> String {
     path.to_lowercase().replace('\\', "/")
 }
 
+/// Whether an enrich run may advance the per-server incremental watermark
+/// (issue #257). Only a write-mode, unscoped run in which every item persisted
+/// is eligible:
+/// - `report_only`: never writes the store, so has nothing durable to record.
+/// - `scoped`: covers only part of the server; its partial max must not move the
+///   server-wide watermark (a later incremental run would skip other scopes).
+/// - `persist_failed`: an item was fetched but not stored; advancing past it
+///   would leave it permanently un-re-fetched under incremental runs.
+fn should_advance_watermark(report_only: bool, scoped: bool, persist_failed: bool) -> bool {
+    !report_only && !scoped && !persist_failed
+}
+
 /// Reconcile matches across sources: positive-wins - an `Explicit` verdict from
 /// any source wins (highest confidence among those), else the highest-confidence
 /// match overall.
@@ -212,6 +224,7 @@ fn verdict_record(
 fn scoped_items(
     client: &MediaServerClient,
     config: &Config,
+    since: Option<&str>,
 ) -> Result<Vec<(AudioItemView, serde_json::Value)>, MediaServerError> {
     let need_scope = config.library_name.is_some() || config.location_name.is_some();
     let libraries = if need_scope {
@@ -233,8 +246,13 @@ fn scoped_items(
         },
     };
     let include_media_sources = client.server_type() == &ServerType::Emby;
-    let items =
-        client.prefetch_audio_items(include_media_sources, lib_scope.parent_id.as_deref())?;
+    let parent = lib_scope.parent_id.as_deref();
+    let items = match since {
+        Some(watermark) => {
+            client.prefetch_audio_items_since(include_media_sources, parent, watermark)?
+        }
+        None => client.prefetch_audio_items(include_media_sources, parent)?,
+    };
     Ok(match lib_scope.location_path {
         Some(loc) => scope::filter_by_location(items, &loc),
         None => items,
@@ -252,17 +270,51 @@ pub fn enrich_workflow(
     store: Option<&SourceStore>,
     report_only: bool,
     refresh: bool,
+    incremental: bool,
 ) -> Result<(EnrichSummary, Vec<EnrichRow>), MediaServerError> {
     let sources = build_sources(&config.sources);
     let params = MatchParams {
         min_confidence: config.sources.match_min_confidence,
         duration_tolerance_s: config.sources.duration_tolerance_s,
     };
-    let items = scoped_items(client, config)?;
+
+    // Incremental prefetch (issue #257): fetch only items newer than the stored
+    // watermark. Only meaningful for a write-mode run with a store; report-only
+    // calibration always fetches the full scope. No watermark yet => full crawl
+    // (the initial backfill, which then records the watermark below).
+    let scoped = config.library_name.is_some() || config.location_name.is_some();
+    let since: Option<String> = if incremental && !report_only {
+        match store.map(|s| s.get_watermark(&server_config.name)) {
+            Some(Ok(w)) => w,
+            Some(Err(e)) => {
+                log::warn!(
+                    "enrich: watermark read failed for '{}': {e}; doing a full crawl",
+                    server_config.name
+                );
+                None
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    if incremental && !report_only && since.is_none() {
+        log::info!(
+            "enrich: no watermark for '{}'; full crawl (initial backfill)",
+            server_config.name
+        );
+    }
+
+    let items = scoped_items(client, config, since.as_deref())?;
     log::info!("enrich: processing {} items", items.len());
 
     let mut summary = EnrichSummary::default();
     let mut rows = Vec::new();
+    // If any upsert fails, the watermark must NOT advance past this run's items:
+    // an item we fetched but failed to persist would otherwise never be
+    // re-fetched incrementally (it sinks below the watermark), leaving a silent
+    // hole recoverable only by a full non-incremental crawl.
+    let mut persist_failed = false;
 
     for (item, _raw) in &items {
         let key = track_key_for_item(item);
@@ -298,6 +350,7 @@ pub fn enrich_workflow(
                     let record = verdict_record(&key, item, &query, m, &server_config.name);
                     if let Err(e) = store.upsert(&record) {
                         log::warn!("enrich: store upsert failed for '{key}': {e}");
+                        persist_failed = true;
                     }
                 }
             }
@@ -321,5 +374,32 @@ pub fn enrich_workflow(
             });
         }
     }
+
+    // Advance the watermark to the newest DateCreated seen when this run is
+    // eligible (see `should_advance_watermark`). A persist failure deliberately
+    // holds the watermark back so the next incremental run re-fetches and
+    // retries; surface that so it is not a silent stall.
+    if let Some(store) = store {
+        if should_advance_watermark(report_only, scoped, persist_failed) {
+            if let Some(max) = items
+                .iter()
+                .filter_map(|(v, _)| v.date_created.as_deref())
+                .max()
+                && let Err(e) = store.set_watermark(&server_config.name, max)
+            {
+                log::warn!(
+                    "enrich: failed to persist watermark for '{}': {e}",
+                    server_config.name
+                );
+            }
+        } else if persist_failed && !report_only && !scoped {
+            log::warn!(
+                "enrich: an upsert failed this run; NOT advancing the '{}' watermark, \
+                 so the next incremental run re-fetches and retries the affected items",
+                server_config.name
+            );
+        }
+    }
+
     Ok((summary, rows))
 }

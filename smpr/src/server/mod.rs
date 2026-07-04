@@ -207,8 +207,35 @@ impl MediaServerClient {
         include_media_sources: bool,
         parent_id: Option<&str>,
     ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
+        self.prefetch_impl(include_media_sources, parent_id, None)
+    }
+
+    /// Incremental prefetch (issue #257): only items whose `DateCreated` is at or
+    /// after `since` (a watermark from a prior run). Sorts `DateCreated`
+    /// descending and stops paginating at the first older item, so a steady-state
+    /// run fetches only newly-added tracks instead of the whole library.
+    ///
+    /// The `>=` boundary (stop at strictly older) re-includes items sharing the
+    /// watermark timestamp; that is intentional - a batch import with one shared
+    /// `DateCreated` straddling two runs is never dropped, and the re-included
+    /// items are cheaply cached-skipped downstream.
+    pub fn prefetch_audio_items_since(
+        &self,
+        include_media_sources: bool,
+        parent_id: Option<&str>,
+        since: &str,
+    ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
+        self.prefetch_impl(include_media_sources, parent_id, Some(since))
+    }
+
+    fn prefetch_impl(
+        &self,
+        include_media_sources: bool,
+        parent_id: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<Vec<(types::AudioItemView, Value)>, MediaServerError> {
         let mut fields =
-            "Name,Path,OfficialRating,AlbumArtist,Album,Genres,RunTimeTicks,ProviderIds"
+            "Name,Path,OfficialRating,AlbumArtist,Album,Genres,RunTimeTicks,ProviderIds,DateCreated"
                 .to_string();
         if include_media_sources && self.server_type == ServerType::Emby {
             fields.push_str(",MediaSources");
@@ -217,6 +244,12 @@ impl MediaServerClient {
         let parent_filter = parent_id
             .map(|id| format!("&ParentId={id}"))
             .unwrap_or_default();
+        // Incremental runs must fetch newest-first so the early stop is sound.
+        let sort = if since.is_some() {
+            "&SortBy=DateCreated&SortOrder=Descending"
+        } else {
+            ""
+        };
 
         let mut all_items = Vec::new();
         let mut start_index: i64 = 0;
@@ -225,7 +258,7 @@ impl MediaServerClient {
         loop {
             let path = format!(
                 "/Users/{uid}/Items?Recursive=true&IncludeItemTypes=Audio\
-                 &Fields={fields}{parent_filter}\
+                 &Fields={fields}{parent_filter}{sort}\
                  &StartIndex={start_index}&Limit={page_size}"
             );
             let result = self.request("GET", &path, None)?;
@@ -246,14 +279,40 @@ impl MediaServerClient {
             }
             let batch_len = page.items.len() as i64;
             let pairs = extract_audio_items(page.items);
-            all_items.extend(pairs);
+
+            let boundary_hit = if let Some(watermark) = since {
+                let dates: Vec<Option<&str>> = pairs
+                    .iter()
+                    .map(|(v, _)| v.date_created.as_deref())
+                    .collect();
+                // The early-stop is only sound if the server honored
+                // SortBy=DateCreated DESC. If a page is not non-increasing, the
+                // sort was ignored and the watermark stop could silently miss
+                // items - warn loudly rather than under-fetch quietly.
+                if !is_descending(&dates) {
+                    log::warn!(
+                        "incremental prefetch: server did not return DateCreated in \
+                         descending order; the watermark early-stop may miss items. \
+                         Re-run a full (non-incremental) enrich to be safe."
+                    );
+                }
+                let (cut, hit) = watermark_cut(&dates, watermark);
+                all_items.extend(pairs.into_iter().take(cut));
+                hit
+            } else {
+                all_items.extend(pairs);
+                false
+            };
+
             start_index += batch_len;
             log::debug!(
                 "fetched {} / {} audio items",
                 start_index,
                 page.total_record_count
             );
-            if start_index >= page.total_record_count {
+            // Stop once the watermark boundary is crossed (older items follow in
+            // DESC order) or the server's full set is exhausted.
+            if boundary_hit || start_index >= page.total_record_count {
                 break;
             }
         }
@@ -403,6 +462,44 @@ impl MediaServerClient {
             }
         }
     }
+}
+
+/// Given a `DateCreated`-descending page and a watermark, decide how many
+/// leading items to keep and whether the older-than-watermark boundary was
+/// crossed (issue #257). Returns `(keep_count, hit_boundary)`.
+///
+/// Keeps every item at or after the watermark; the first item with a present
+/// `DateCreated` strictly older than `since` marks the boundary - because the
+/// page is sorted descending, everything from there on is older, so pagination
+/// can stop. An item with no `DateCreated` is kept and never triggers the
+/// boundary, so a stray null value never silently drops items or halts the
+/// crawl early.
+pub(crate) fn watermark_cut(dates: &[Option<&str>], since: &str) -> (usize, bool) {
+    for (i, d) in dates.iter().enumerate() {
+        if let Some(v) = d
+            && *v < since
+        {
+            return (i, true);
+        }
+    }
+    (dates.len(), false)
+}
+
+/// Whether a page's `DateCreated` values are non-increasing (the order the
+/// incremental early-stop relies on). `None` values are ignored (they carry no
+/// order); only adjacent present values are compared. Used as a loud-failure
+/// guard, not for control flow.
+pub(crate) fn is_descending(dates: &[Option<&str>]) -> bool {
+    let mut last: Option<&str> = None;
+    for d in dates.iter().flatten() {
+        if let Some(prev) = last
+            && *d > prev
+        {
+            return false;
+        }
+        last = Some(d);
+    }
+    true
 }
 
 /// Extract (AudioItemView, Value) pairs from raw JSON item values.

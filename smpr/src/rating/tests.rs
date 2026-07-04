@@ -27,6 +27,7 @@ fn audio_item(id: &str, path: &str) -> (AudioItemView, serde_json::Value) {
         genres: vec![],
         run_time_ticks: None,
         provider_ids: None,
+        date_created: None,
     };
     (view, val)
 }

@@ -500,3 +500,74 @@ fn audio_item_missing_ticks_and_ids_are_none() {
     assert_eq!(view.duration_s(), None);
     assert_eq!(view.mbid(), None);
 }
+
+#[test]
+fn watermark_cut_keeps_all_when_none_older() {
+    use super::super::watermark_cut;
+    // Every item is newer than (or equal to) the watermark: keep all, no boundary.
+    let dates = [Some("2026-07-04T05:00:00Z"), Some("2026-07-04T04:00:00Z")];
+    assert_eq!(watermark_cut(&dates, "2026-07-04T03:00:00Z"), (2, false));
+}
+
+#[test]
+fn watermark_cut_stops_at_first_older() {
+    use super::super::watermark_cut;
+    // DESC-sorted: keep the two at/after the watermark, stop at the older one.
+    let dates = [
+        Some("2026-07-04T05:00:00Z"),
+        Some("2026-07-04T04:00:00Z"),
+        Some("2026-07-04T02:00:00Z"),
+    ];
+    assert_eq!(watermark_cut(&dates, "2026-07-04T03:00:00Z"), (2, true));
+}
+
+#[test]
+fn watermark_cut_keeps_equal_timestamps() {
+    use super::super::watermark_cut;
+    // Items sharing the watermark timestamp are >= it, so kept (re-included and
+    // cheaply cached-skipped downstream); the strictly-older one is the boundary.
+    let dates = [
+        Some("2026-07-04T03:00:00Z"),
+        Some("2026-07-04T03:00:00Z"),
+        Some("2026-07-04T02:00:00Z"),
+    ];
+    assert_eq!(watermark_cut(&dates, "2026-07-04T03:00:00Z"), (2, true));
+}
+
+#[test]
+fn watermark_cut_all_older_keeps_none() {
+    use super::super::watermark_cut;
+    let dates = [Some("2026-07-01T00:00:00Z")];
+    assert_eq!(watermark_cut(&dates, "2026-07-05T00:00:00Z"), (0, true));
+}
+
+#[test]
+fn watermark_cut_none_date_is_kept_and_not_a_boundary() {
+    use super::super::watermark_cut;
+    // A stray null DateCreated is kept and never halts the crawl; only a present
+    // older value marks the boundary.
+    let dates = [
+        Some("2026-07-04T05:00:00Z"),
+        None,
+        Some("2026-07-04T02:00:00Z"),
+    ];
+    assert_eq!(watermark_cut(&dates, "2026-07-04T03:00:00Z"), (2, true));
+}
+
+#[test]
+fn watermark_cut_empty_is_no_boundary() {
+    use super::super::watermark_cut;
+    assert_eq!(watermark_cut(&[], "2026-07-04T03:00:00Z"), (0, false));
+}
+
+#[test]
+fn is_descending_accepts_non_increasing_and_flags_out_of_order() {
+    use super::super::is_descending;
+    assert!(is_descending(&[Some("05"), Some("04"), Some("02")]));
+    assert!(is_descending(&[Some("05"), Some("05"), Some("04")])); // equal ok
+    assert!(is_descending(&[])); // empty ok
+    assert!(is_descending(&[Some("05"), None, Some("04")])); // None ignored, still ok
+    // An ascending pair means the server ignored the DESC sort.
+    assert!(!is_descending(&[Some("04"), Some("05")]));
+    assert!(!is_descending(&[Some("05"), None, Some("06")]));
+}

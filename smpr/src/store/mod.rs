@@ -12,6 +12,12 @@ use crate::sources::SourceVerdict;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
+/// `enrich_meta` key for a server's incremental-prefetch watermark. Namespaced
+/// by server so distinct servers keep independent watermarks in one store.
+fn watermark_key(server_name: &str) -> String {
+    format!("watermark:date_created:{server_name}")
+}
+
 /// One persisted verdict row with provenance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerdictRecord {
@@ -70,7 +76,35 @@ impl SourceStore {
                 curated_override TEXT
                     CHECK (curated_override IN ('explicit', 'cleaned', 'not_explicit')),
                 notes            TEXT
+            );
+            CREATE TABLE IF NOT EXISTS enrich_meta (
+                key    TEXT PRIMARY KEY,
+                value  TEXT NOT NULL
             );",
+        )?;
+        Ok(())
+    }
+
+    /// Read the incremental-prefetch watermark for a server: the max
+    /// `DateCreated` processed on the last successful write-mode run (issue
+    /// #257). `None` when no prior run recorded one (first run -> full crawl).
+    pub fn get_watermark(&self, server_name: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM enrich_meta WHERE key = ?1",
+                params![watermark_key(server_name)],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Record the incremental-prefetch watermark for a server (upsert).
+    pub fn set_watermark(&self, server_name: &str, date_created: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO enrich_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![watermark_key(server_name), date_created],
         )?;
         Ok(())
     }
