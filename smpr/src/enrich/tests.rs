@@ -30,6 +30,7 @@ fn item(name: Option<&str>, path: Option<&str>) -> AudioItemView {
         genres: vec![],
         run_time_ticks: Some(2_000_000_000), // 200s
         provider_ids: None,
+        date_created: None,
     }
 }
 
@@ -160,4 +161,17 @@ fn match_track_empty_when_nothing_clears_the_gate() {
         )],
     })];
     assert!(match_track(&q, &sources, &PARAMS).is_empty());
+}
+
+#[test]
+fn watermark_advances_only_on_clean_unscoped_write_run() {
+    use super::should_advance_watermark;
+    // Eligible: write mode, unscoped, no persist failure.
+    assert!(should_advance_watermark(false, false, false));
+    // A swallowed upsert failure must hold the watermark back (issue #257 review).
+    assert!(!should_advance_watermark(false, false, true));
+    // Scoped runs never advance the server-wide watermark.
+    assert!(!should_advance_watermark(false, true, false));
+    // Report-only never advances.
+    assert!(!should_advance_watermark(true, false, false));
 }

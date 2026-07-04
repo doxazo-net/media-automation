@@ -166,6 +166,33 @@ fn parse_verdict_column_errors_on_unknown() {
 }
 
 #[test]
+fn watermark_round_trips_and_is_per_server() {
+    let store = SourceStore::open_in_memory().unwrap();
+    // No watermark recorded yet.
+    assert_eq!(store.get_watermark("home-emby").unwrap(), None);
+
+    store
+        .set_watermark("home-emby", "2026-07-04T05:00:00.0000000Z")
+        .unwrap();
+    assert_eq!(
+        store.get_watermark("home-emby").unwrap().as_deref(),
+        Some("2026-07-04T05:00:00.0000000Z")
+    );
+
+    // A different server keeps an independent watermark.
+    assert_eq!(store.get_watermark("uat-jellyfin").unwrap(), None);
+
+    // Upsert overwrites in place.
+    store
+        .set_watermark("home-emby", "2026-07-05T09:00:00.0000000Z")
+        .unwrap();
+    assert_eq!(
+        store.get_watermark("home-emby").unwrap().as_deref(),
+        Some("2026-07-05T09:00:00.0000000Z")
+    );
+}
+
+#[test]
 fn open_sets_busy_timeout() {
     // A file-backed open() must configure SQLite's busy_timeout (issue #256) so
     // a competing writer waits rather than erroring immediately. PRAGMA reports

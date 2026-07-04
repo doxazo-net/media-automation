@@ -74,6 +74,11 @@ pub struct AudioItemView {
     pub run_time_ticks: Option<i64>,
     /// External provider IDs (e.g. `MusicBrainzTrack`), when tagged.
     pub provider_ids: Option<std::collections::HashMap<String, String>>,
+    /// When the item was added to the library (Emby/Jellyfin `DateCreated`), a
+    /// fixed-width UTC timestamp like `2026-07-04T04:32:47.0000000Z`. The
+    /// incremental prefetch watermark (issue #257) sorts and compares on this.
+    /// The fixed format means lexicographic string order equals chronological.
+    pub date_created: Option<String>,
 }
 
 impl AudioItemView {

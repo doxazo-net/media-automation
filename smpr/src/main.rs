@@ -132,6 +132,13 @@ enum Commands {
         #[arg(long)]
         refresh: bool,
 
+        /// Fetch only items added since the last run (by DateCreated watermark),
+        /// instead of crawling the whole library. The first run with no recorded
+        /// watermark does a full crawl, then records one. Only advances the
+        /// watermark on unscoped runs. Ignored in report mode.
+        #[arg(long)]
+        incremental: bool,
+
         /// If another enrich run holds the single-instance lock, wait for it to
         /// finish instead of skipping this run. Default: skip (exit 0), so an
         /// overlapping scheduled/cron invocation is a no-op, not a failure.
@@ -223,6 +230,7 @@ fn run_enrich(
     cfg: &config::Config,
     report_path: Option<PathBuf>,
     refresh: bool,
+    incremental: bool,
     wait: bool,
     limit: Option<usize>,
 ) {
@@ -300,6 +308,7 @@ fn run_enrich(
             store.as_ref(),
             report_only,
             refresh,
+            incremental,
             limit,
         ) {
             Ok((s, r)) => {
@@ -464,6 +473,7 @@ fn main() {
         Commands::Enrich {
             common,
             refresh,
+            incremental,
             wait,
             limit,
         } => {
@@ -471,7 +481,7 @@ fn main() {
             // the config-resolved report_path (which TOML [report] can set).
             let report_path = common.report.clone().map(PathBuf::from);
             let cfg = load_config(&common, None, false, false);
-            run_enrich(&cfg, report_path, refresh, wait, limit);
+            run_enrich(&cfg, report_path, refresh, incremental, wait, limit);
         }
         Commands::Reset { common } => {
             let cfg = load_config(&common, None, false, false);
