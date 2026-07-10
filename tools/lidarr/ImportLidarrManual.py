@@ -72,6 +72,7 @@ import platform as _platform_mod
 import urllib.parse
 import urllib.request
 import urllib.error
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -139,6 +140,12 @@ AUDIO_EXTENSIONS = {
 ARTWORK_NAMES = {'folder', 'cover', 'front', 'albumart', 'album', 'art', 'thumb'}
 DISCART_NAMES = {'cd', 'cdart', 'discart', 'disc'}
 ARTWORK_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
+
+# Sidecar files handled by --preserve-sidecars.  Per-track sidecars share an
+# audio file's basename and are carried by Lidarr's extra-file import; album-
+# level sidecars match no track and are only reported, never moved.
+SIDECAR_PERTRACK_EXTENSIONS = {'.lrc', '.txt', '.nfo'}
+SIDECAR_ALBUM_EXTENSIONS = {'.nfo', '.cue'}
 
 # Lossless image formats that should be converted to standard formats via ImageMagick
 CONVERTIBLE_IMAGE_FORMATS = {'.tiff', '.tif', '.webp'}
@@ -867,6 +874,14 @@ class LidarrClient:
         payload.update(kwargs)
         return self.post('command', data=payload)
 
+    def get_media_management_config(self):
+        """GET /config/mediamanagement -- includes importExtraFiles/extraFileExtensions."""
+        return self.get('config/mediamanagement')
+
+    def update_media_management_config(self, cfg: dict):
+        """PUT /config/mediamanagement with a full config body."""
+        return self.put('config/mediamanagement', data=cfg)
+
 # ---------------------------------------------------------------------------
 # Filesystem helpers
 # ---------------------------------------------------------------------------
@@ -901,6 +916,216 @@ def find_artwork(directory: str) -> list[str]:
     except OSError:
         pass
     return artwork
+
+
+def find_sidecars(directory: str) -> list[str]:
+    """Find non-audio, non-image sidecar files (lyrics, .nfo, .cue)."""
+    exts = SIDECAR_PERTRACK_EXTENSIONS | SIDECAR_ALBUM_EXTENSIONS
+    found = []
+    try:
+        for f in os.listdir(directory):
+            ext = os.path.splitext(f)[1].lower()
+            if ext in exts:
+                found.append(os.path.join(directory, f))
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def classify_sidecars(sidecar_paths: list[str],
+                      audio_paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split sidecars into (per-track, album-level).
+
+    Per-track: extension in SIDECAR_PERTRACK_EXTENSIONS AND basename matches an
+    audio file's basename (case-insensitive).  Album-level: extension in
+    SIDECAR_ALBUM_EXTENSIONS and not per-track.  Anything else is ignored.
+
+    A file named ``album.nfo`` is never treated as per-track even if a track
+    happens to be named ``album.*``; ``album.nfo`` is an album-level metadata
+    file whose release identity cannot be verified, so it is always a leftover.
+    """
+    audio_bases = {os.path.splitext(os.path.basename(a))[0].lower()
+                   for a in audio_paths}
+    pertrack, album = [], []
+    for s in sidecar_paths:
+        base, ext = os.path.splitext(os.path.basename(s))
+        ext = ext.lower()
+        is_album_nfo = ext == '.nfo' and base.lower() == 'album'
+        if (ext in SIDECAR_PERTRACK_EXTENSIONS and base.lower() in audio_bases
+                and not is_album_nfo):
+            pertrack.append(s)
+        elif ext in SIDECAR_ALBUM_EXTENSIONS:
+            album.append(s)
+    return pertrack, album
+
+
+def _ext_tokens(csv: str) -> list[str]:
+    return [t.strip() for t in (csv or '').split(',') if t.strip()]
+
+
+def needed_extra_extensions(pertrack_sidecars: list[str],
+                            current_ext_csv: str) -> list[str]:
+    """Dot-less extensions among per-track sidecars missing from current_ext_csv."""
+    have = {t.lower() for t in _ext_tokens(current_ext_csv)}
+    needed: list[str] = []
+    seen: set[str] = set()
+    for s in pertrack_sidecars:
+        ext = os.path.splitext(s)[1].lower().lstrip('.')
+        if ext and ext not in have and ext not in seen:
+            needed.append(ext)
+            seen.add(ext)
+    return needed
+
+
+def union_extra_extensions(current_ext_csv: str, needed: list[str]) -> str:
+    """Union existing extension tokens (verbatim, original order) with needed ones."""
+    existing = _ext_tokens(current_ext_csv)
+    have = {t.lower() for t in existing}
+    result = list(existing)
+    for ext in needed:
+        if ext.lower() not in have:
+            result.append(ext)
+            have.add(ext.lower())
+    return ','.join(result)
+
+
+def decide_config_action(cfg: dict, pertrack_sidecars: list[str]) -> tuple[bool, bool, list[str]]:
+    """Decide whether Lidarr's extra-file config must change to carry sidecars.
+
+    Returns (needs_change, import_extra_off, missing_exts).
+    """
+    import_extra_off = not cfg.get('importExtraFiles', False)
+    missing = needed_extra_extensions(pertrack_sidecars,
+                                      cfg.get('extraFileExtensions', ''))
+    return (import_extra_off or bool(missing)), import_extra_off, missing
+
+
+def ensure_extra_files_config(client, pertrack_sidecars, dry_run, prompt=None) -> bool:
+    """Ensure Lidarr's importExtraFiles + extraFileExtensions cover the per-track
+    sidecars present.  Prompts before mutating global config.  Returns whether
+    the config is ready for sidecars to travel."""
+    if not pertrack_sidecars:
+        return True
+    if prompt is None:
+        prompt = input
+    try:
+        cfg = client.get_media_management_config()
+    except Exception as exc:
+        log.warning("  Sidecars: could not read Lidarr config (%s); "
+                    "sidecars may not travel", exc)
+        return False
+
+    needs_change, off, missing = decide_config_action(cfg, pertrack_sidecars)
+    if not needs_change:
+        return True
+
+    parts = []
+    if off:
+        parts.append("enable 'Import Extra Files'")
+    if missing:
+        parts.append("add extensions: " + ', '.join(missing))
+    summary = "; ".join(parts)
+
+    if dry_run:
+        log.info("  DRY RUN - would update Lidarr media management: %s", summary)
+        return True
+
+    log.info("  Sidecars need Lidarr config change: %s", summary)
+    try:
+        answer = prompt("  Update Lidarr media-management config now? [y/N] ").strip().lower()
+    except EOFError:
+        answer = 'n'
+    if answer not in ('y', 'yes'):
+        log.warning("  Sidecars: config unchanged; per-track sidecars will not "
+                    "travel until '%s'", summary)
+        return False
+
+    cfg['importExtraFiles'] = True
+    cfg['extraFileExtensions'] = union_extra_extensions(
+        cfg.get('extraFileExtensions', ''), missing)
+    try:
+        client.update_media_management_config(cfg)
+        log.info("  Updated Lidarr media management (%s)", summary)
+        return True
+    except Exception as exc:
+        log.warning("  Sidecars: config update failed (%s)", exc)
+        return False
+
+
+def preserve_sidecars_preimport(client, album_dir, audio_paths, dry_run, prompt=None) -> dict:
+    """Find + classify sidecars and ensure Lidarr's config carries the exact-match
+    per-track ones.  Never renames: every sidecar that is not an exact-match
+    per-track carry is left in place and warned.  Returns a summary dict for
+    post-import verification."""
+    sidecars = find_sidecars(album_dir)
+    pertrack, _album = classify_sidecars(sidecars, audio_paths)
+    carried = set(pertrack)
+    leftovers = [s for s in sidecars if s not in carried]
+
+    config_ready = ensure_extra_files_config(client, pertrack, dry_run, prompt=prompt)
+
+    for s in leftovers:
+        log.warning("  Sidecar not carried (no exact track-name match; "
+                    "place by hand if wanted): %s", s)
+
+    return {
+        'pertrack': pertrack, 'leftovers': leftovers, 'config_ready': config_ready,
+    }
+
+
+def snapshot_destination_ext_counts(client, album_id, remote_prefix,
+                                    local_prefix) -> "Counter":
+    """Pre-import snapshot of per-extension file counts at an album's destination.
+
+    Captured BEFORE the import so ``verify_sidecars_landed`` can require the
+    post-import counts to exceed this baseline, rather than a bare threshold.
+    Returns an empty ``Counter`` when the destination cannot be resolved or read
+    (e.g. a brand-new album with no existing files yet).
+    """
+    dest = resolve_artwork_destination(client, album_id)
+    if not dest:
+        return Counter()
+    dest = remap_path(dest, remote_prefix, local_prefix)
+    try:
+        return Counter(os.path.splitext(f)[1].lower() for f in os.listdir(dest))
+    except OSError:
+        return Counter()
+
+
+def verify_sidecars_landed(client, album_id, pertrack_sidecars,
+                           remote_prefix, local_prefix,
+                           baseline_counts=None) -> list[str]:
+    """Confirm the carried sidecars appear at the import destination.
+
+    Lidarr renames sidecars on import, so we cannot match by basename; instead we
+    compare per-extension COUNTS against a pre-import baseline (see
+    ``snapshot_destination_ext_counts``): a carried sidecar counts only if it
+    increased the destination's count for that extension
+    (``post - baseline >= carried``).  Comparing the delta, not the absolute
+    count, keeps a pre-existing same-extension file (e.g. on a quality-upgrade
+    import into an existing album directory) from masking a sidecar that failed
+    to travel.  Returns human-readable shortfall strings (empty list = all
+    carried sidecars appear to have landed).
+    """
+    if not pertrack_sidecars:
+        return []
+    baseline = baseline_counts or Counter()
+    dest = resolve_artwork_destination(client, album_id)
+    if not dest:
+        return [f"destination not resolved for {len(pertrack_sidecars)} carried sidecar(s)"]
+    dest = remap_path(dest, remote_prefix, local_prefix)
+    try:
+        dest_files = os.listdir(dest)
+    except OSError:
+        return [f"destination unreadable for {len(pertrack_sidecars)} carried sidecar(s)"]
+    want = Counter(os.path.splitext(s)[1].lower() for s in pertrack_sidecars)
+    have = Counter(os.path.splitext(f)[1].lower() for f in dest_files)
+    shortfalls = []
+    for ext, n in sorted(want.items()):
+        gained = have.get(ext, 0) - baseline.get(ext, 0)
+        if gained < n:
+            shortfalls.append(f"{ext}: expected {n} new at destination, found {gained}")
+    return shortfalls
 
 
 def find_animated_artwork(directory: str) -> str | None:
@@ -2264,7 +2489,8 @@ def process_album_dir(client: LidarrClient, album_dir: str,
                       skip_bpm: bool = False,
                       force_bpm: bool = False,
                       bpm_confidence: float = 0.5,
-                      bpm_workers: int | None = None) -> str:
+                      bpm_workers: int | None = None,
+                      preserve_sidecars: bool = False) -> str:
     """
     Import a single album directory.
 
@@ -2429,6 +2655,20 @@ def process_album_dir(client: LidarrClient, album_dir: str,
             if decision == 'import':
                 log.info("  Quality upgrade: %s", reason)
 
+    sidecar_summary = None
+    sidecar_baselines = {}
+    if preserve_sidecars and not skip_import:
+        audio_paths = [it.get('path') for it in identified if it.get('path')]
+        sidecar_summary = preserve_sidecars_preimport(
+            client, album_dir, audio_paths, dry_run)
+        # Snapshot per-extension counts at each destination BEFORE the import so
+        # verify can require the counts to actually increase (not just clear a
+        # threshold a pre-existing same-extension file already met).
+        if sidecar_summary['pertrack'] and not dry_run:
+            for aid in album_ids:
+                sidecar_baselines[aid] = snapshot_destination_ext_counts(
+                    client, aid, remote_prefix, local_prefix)
+
     if dry_run and not skip_import:
         log.info("  DRY RUN - would import %d tracks", len(identified))
         return 'dry_run'
@@ -2481,6 +2721,17 @@ def process_album_dir(client: LidarrClient, album_dir: str,
                 run_bpm_tagging(bpm_dest, dry_run=dry_run, force_bpm=force_bpm,
                                 min_confidence=bpm_confidence,
                                 max_workers=bpm_workers)
+
+    # Only verify when the config was actually made ready; if the user declined
+    # the config change (config_ready=False) the sidecars were never expected to
+    # travel, so a shortfall warning would be misleading noise.
+    if (preserve_sidecars and sidecar_summary
+            and sidecar_summary.get('config_ready') and not dry_run):
+        for aid in album_ids:
+            for shortfall in verify_sidecars_landed(
+                    client, aid, sidecar_summary['pertrack'],
+                    remote_prefix, local_prefix, sidecar_baselines.get(aid)):
+                log.warning("  Sidecar did not land at destination (%s)", shortfall)
 
     # Step 6: Handle artwork
     artwork_files = find_artwork(album_dir)
@@ -3030,7 +3281,7 @@ Configuration (checked in order):
 """
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description='Lidarr batch manual import - imports one album at a time '
                     'to work around the 100-file limit. '
@@ -3097,12 +3348,15 @@ def parse_args():
     p.add_argument('--bpm-confidence', type=float, default=0.5, metavar='N',
                    help='Minimum confidence (0.0-1.0) to accept a BPM result; '
                         'tracks with unstable tempo score lower (default: 0.5)')
+    p.add_argument('--preserve-sidecars', action='store_true',
+                   help='carry per-track lyric/.nfo sidecars with the import via '
+                        "Lidarr's extra-file import; report album-level sidecars")
     p.add_argument('--verbose', '-v', action='store_true',
                    help='Enable verbose/debug logging')
     p.add_argument('--examples', action='store_true',
                    help='Show detailed usage examples and exit')
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     if args.examples:
         print(EXAMPLES % {'prog': p.prog})
@@ -3251,7 +3505,8 @@ def main():
                                    args.skip_bpm,
                                    args.force_bpm,
                                    args.bpm_confidence,
-                                   args.bpm_workers)
+                                   args.bpm_workers,
+                                   preserve_sidecars=args.preserve_sidecars)
         counts[result] = counts.get(result, 0) + 1
 
         if result in ('failed', 'rejected'):

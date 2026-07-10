@@ -131,3 +131,45 @@ The Unraid boot persistence is idempotent. Re-running the install (or running
 the script again after adding a dependency) rewrites the User Scripts entry, or
 replaces the fenced block in `/boot/config/go`, rather than appending a
 duplicate. The `il` symlink is likewise re-pointed, not stacked.
+
+## Preserving lyric/metadata sidecars (`--preserve-sidecars`)
+
+Lidarr imports the audio but, unless told otherwise, leaves per-track sidecar
+files (synced `.lrc` / plain `.txt` lyrics, per-track `.nfo`) behind in the
+source folder, so they never follow a track into the library. This is most
+visible with a "deluxe" rip that lands on a different path from an edition
+already in the library.
+
+`--preserve-sidecars` makes those sidecars travel by using Lidarr's own
+extra-file import (it never places or renames files itself):
+
+```bash
+il /path/to/album --preserve-sidecars
+il /path/to/album --preserve-sidecars --dry-run    # report the plan, change nothing
+```
+
+What it does, per album:
+
+- Checks Lidarr's Media Management config (`Import Extra Files` +
+  `Extra File Extensions`). If your sidecar types are not enabled, it shows
+  exactly what is missing and prompts before turning them on (it unions the
+  extensions in, never replacing your existing list). Decline, or a
+  non-interactive run, leaves the config untouched and warns.
+- Carries only sidecars whose basename already matches a source audio file
+  (for example `01 - Song.lrc` beside `01 - Song.flac`). Lidarr renames the
+  sidecar to follow the track, so it lands correctly even when the destination
+  path differs.
+- Never renames or guesses. A wrong lyric on the wrong track is worse than a
+  missing one (it would feed bad results into downstream tools), and deluxe
+  editions reorder tracks, so anything that does not exactly match, plus every
+  album-level `album.nfo` / `.cue`, is left in place and listed in the log for
+  you to handle by hand. (An `album.nfo` is deliberately never carried: its
+  MusicBrainz identity cannot be reliably verified, so it could mislabel the
+  destination.)
+- After the import, verifies the carried sidecars actually appear at the
+  destination (a per-extension count, robust to Lidarr's renaming) and warns on
+  any shortfall.
+
+All of this is best-effort: a config or verification hiccup only logs a warning
+and never blocks the audio import. The flag is off by default; without it,
+behavior is unchanged.
