@@ -939,6 +939,10 @@ def classify_sidecars(sidecar_paths: list[str],
     Per-track: extension in SIDECAR_PERTRACK_EXTENSIONS AND basename matches an
     audio file's basename (case-insensitive).  Album-level: extension in
     SIDECAR_ALBUM_EXTENSIONS and not per-track.  Anything else is ignored.
+
+    A file named ``album.nfo`` is never treated as per-track even if a track
+    happens to be named ``album.*``; ``album.nfo`` is an album-level metadata
+    file whose release identity cannot be verified, so it is always a leftover.
     """
     audio_bases = {os.path.splitext(os.path.basename(a))[0].lower()
                    for a in audio_paths}
@@ -946,7 +950,9 @@ def classify_sidecars(sidecar_paths: list[str],
     for s in sidecar_paths:
         base, ext = os.path.splitext(os.path.basename(s))
         ext = ext.lower()
-        if ext in SIDECAR_PERTRACK_EXTENSIONS and base.lower() in audio_bases:
+        is_album_nfo = ext == '.nfo' and base.lower() == 'album'
+        if (ext in SIDECAR_PERTRACK_EXTENSIONS and base.lower() in audio_bases
+                and not is_album_nfo):
             pertrack.append(s)
         elif ext in SIDECAR_ALBUM_EXTENSIONS:
             album.append(s)
@@ -1067,32 +1073,58 @@ def preserve_sidecars_preimport(client, album_dir, audio_paths, dry_run, prompt=
     }
 
 
+def snapshot_destination_ext_counts(client, album_id, remote_prefix,
+                                    local_prefix) -> "Counter":
+    """Pre-import snapshot of per-extension file counts at an album's destination.
+
+    Captured BEFORE the import so ``verify_sidecars_landed`` can require the
+    post-import counts to exceed this baseline, rather than a bare threshold.
+    Returns an empty ``Counter`` when the destination cannot be resolved or read
+    (e.g. a brand-new album with no existing files yet).
+    """
+    dest = resolve_artwork_destination(client, album_id)
+    if not dest:
+        return Counter()
+    dest = remap_path(dest, remote_prefix, local_prefix)
+    try:
+        return Counter(os.path.splitext(f)[1].lower() for f in os.listdir(dest))
+    except OSError:
+        return Counter()
+
+
 def verify_sidecars_landed(client, album_id, pertrack_sidecars,
-                           remote_prefix, local_prefix) -> list[str]:
+                           remote_prefix, local_prefix,
+                           baseline_counts=None) -> list[str]:
     """Confirm the carried sidecars appear at the import destination.
 
     Lidarr renames sidecars on import, so we cannot match by basename; instead we
-    compare per-extension COUNTS: for each extension we carried, the destination
-    should hold at least as many files of that extension.  Returns human-readable
-    shortfall strings (empty list = all carried sidecars appear to have landed).
+    compare per-extension COUNTS against a pre-import baseline (see
+    ``snapshot_destination_ext_counts``): a carried sidecar counts only if it
+    increased the destination's count for that extension
+    (``post - baseline >= carried``).  Comparing the delta, not the absolute
+    count, keeps a pre-existing same-extension file (e.g. on a quality-upgrade
+    import into an existing album directory) from masking a sidecar that failed
+    to travel.  Returns human-readable shortfall strings (empty list = all
+    carried sidecars appear to have landed).
     """
     if not pertrack_sidecars:
         return []
+    baseline = baseline_counts or Counter()
     dest = resolve_artwork_destination(client, album_id)
     if not dest:
-        return ["destination not resolved for %d carried sidecar(s)" % len(pertrack_sidecars)]
+        return [f"destination not resolved for {len(pertrack_sidecars)} carried sidecar(s)"]
     dest = remap_path(dest, remote_prefix, local_prefix)
     try:
         dest_files = os.listdir(dest)
     except OSError:
-        return ["destination unreadable for %d carried sidecar(s)" % len(pertrack_sidecars)]
+        return [f"destination unreadable for {len(pertrack_sidecars)} carried sidecar(s)"]
     want = Counter(os.path.splitext(s)[1].lower() for s in pertrack_sidecars)
     have = Counter(os.path.splitext(f)[1].lower() for f in dest_files)
     shortfalls = []
     for ext, n in sorted(want.items()):
-        if have.get(ext, 0) < n:
-            shortfalls.append("%s: expected >=%d at destination, found %d"
-                              % (ext, n, have.get(ext, 0)))
+        gained = have.get(ext, 0) - baseline.get(ext, 0)
+        if gained < n:
+            shortfalls.append(f"{ext}: expected {n} new at destination, found {gained}")
     return shortfalls
 
 
@@ -2624,10 +2656,18 @@ def process_album_dir(client: LidarrClient, album_dir: str,
                 log.info("  Quality upgrade: %s", reason)
 
     sidecar_summary = None
+    sidecar_baselines = {}
     if preserve_sidecars and not skip_import:
         audio_paths = [it.get('path') for it in identified if it.get('path')]
         sidecar_summary = preserve_sidecars_preimport(
             client, album_dir, audio_paths, dry_run)
+        # Snapshot per-extension counts at each destination BEFORE the import so
+        # verify can require the counts to actually increase (not just clear a
+        # threshold a pre-existing same-extension file already met).
+        if sidecar_summary['pertrack'] and not dry_run:
+            for aid in album_ids:
+                sidecar_baselines[aid] = snapshot_destination_ext_counts(
+                    client, aid, remote_prefix, local_prefix)
 
     if dry_run and not skip_import:
         log.info("  DRY RUN - would import %d tracks", len(identified))
@@ -2682,11 +2722,15 @@ def process_album_dir(client: LidarrClient, album_dir: str,
                                 min_confidence=bpm_confidence,
                                 max_workers=bpm_workers)
 
-    if preserve_sidecars and sidecar_summary and not dry_run:
+    # Only verify when the config was actually made ready; if the user declined
+    # the config change (config_ready=False) the sidecars were never expected to
+    # travel, so a shortfall warning would be misleading noise.
+    if (preserve_sidecars and sidecar_summary
+            and sidecar_summary.get('config_ready') and not dry_run):
         for aid in album_ids:
             for shortfall in verify_sidecars_landed(
                     client, aid, sidecar_summary['pertrack'],
-                    remote_prefix, local_prefix):
+                    remote_prefix, local_prefix, sidecar_baselines.get(aid)):
                 log.warning("  Sidecar did not land at destination (%s)", shortfall)
 
     # Step 6: Handle artwork

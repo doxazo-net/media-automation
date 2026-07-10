@@ -51,6 +51,15 @@ class TestClassifySidecars(unittest.TestCase):
         self.assertEqual(pertrack, ['/m/track one.lrc'])
         self.assertEqual(album, [])
 
+    def test_album_nfo_never_pertrack_even_with_matching_track(self):
+        # An album.nfo is album-level by contract, even if a track happens to be
+        # named album.* -- it must never be carried as a per-track sidecar.
+        audio = ['/m/album.flac']
+        pertrack, album = mod.classify_sidecars(
+            ['/m/album.nfo', '/m/Album.NFO'], audio)
+        self.assertEqual(pertrack, [])
+        self.assertEqual(sorted(album), ['/m/Album.NFO', '/m/album.nfo'])
+
 
 class TestExtraExtensionHelpers(unittest.TestCase):
     def test_needed_finds_missing(self):
@@ -252,6 +261,31 @@ class TestVerifySidecarsLanded(unittest.TestCase):
                 self._client_with_dest(dest), 5, pertrack, '', '')
             self.assertEqual(len(missing), 1)
             self.assertIn('.lrc', missing[0])
+
+    def test_preexisting_same_ext_does_not_mask_failure(self):
+        # A .lrc already at the destination (baseline) must NOT satisfy a new
+        # import's requirement: comparing the delta, not the absolute count,
+        # catches a sidecar that failed to travel (the CR "false success" case).
+        with tempfile.TemporaryDirectory() as dest:
+            _touch(dest, '1 - Renamed.flac')
+            _touch(dest, '0 - Preexisting.lrc')       # pre-existing, in baseline
+            baseline = mod.Counter({'.lrc': 1})
+            pertrack = ['/src/01 - Song.lrc']          # 1 new .lrc expected
+            missing = mod.verify_sidecars_landed(
+                self._client_with_dest(dest), 5, pertrack, '', '', baseline)
+            self.assertEqual(len(missing), 1)
+            self.assertIn('.lrc', missing[0])
+
+    def test_delta_over_baseline_counts_as_landed(self):
+        with tempfile.TemporaryDirectory() as dest:
+            _touch(dest, '1 - Renamed.flac')
+            _touch(dest, '0 - Preexisting.lrc')       # baseline
+            _touch(dest, '1 - Renamed.lrc')           # the carried sidecar
+            baseline = mod.Counter({'.lrc': 1})
+            pertrack = ['/src/01 - Song.lrc']
+            missing = mod.verify_sidecars_landed(
+                self._client_with_dest(dest), 5, pertrack, '', '', baseline)
+            self.assertEqual(missing, [])
 
 
 if __name__ == '__main__':
