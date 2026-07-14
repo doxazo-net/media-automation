@@ -1153,7 +1153,7 @@ mod integration {
     use std::collections::BTreeMap;
 
     fn uat_enabled() -> bool {
-        std::env::var("SMPR_UAT_TEST").map_or(false, |v| v == "1")
+        std::env::var("SMPR_UAT_TEST").is_ok_and(|v| v == "1")
     }
 
     fn uat_jellyfin_client() -> MediaServerClient {

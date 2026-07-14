@@ -6,7 +6,7 @@ version = "0.0.0"
 edition = "2024"
 description = "Fetch lyrics from Emby/Jellyfin, detect explicit content, set parental ratings"
 license = "MIT"
-rust-version = "1.94"
+rust-version = "1.97"
 
 [lib]
 name = "smpr"
@@ -28,10 +28,12 @@ inquire = "0.9"
 log = "0.4.32"
 ratatui = "0.30"
 regex = "1"
-# Pinned exactly: rusqlite >= 0.32 pulls libsqlite3-sys versions that use the
-# unstable `cfg_select` macro and fail to build on our rust-version = 1.94.
-# `bundled` compiles SQLite from source (required for the static musl release
-# target). Revisit this pin when a 1.94-compatible newer rusqlite lands.
+# `bundled` compiles SQLite from source, which the static musl release target needs.
+# The exact pin dates from rust-version = 1.94, where libsqlite3-sys >= 0.32 failed to
+# build because its build script used the then-unstable `cfg_select` macro. That macro
+# is stable as of the 1.97 toolchain this crate now targets (verified: rusqlite 0.40 /
+# libsqlite3-sys 0.38.1 compiles clean on 1.97), so the constraint is lifted and the
+# exact pin can be relaxed -- see the open rusqlite 0.40 bump.
 rusqlite = { version = "=0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

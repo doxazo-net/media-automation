@@ -6,7 +6,7 @@ version = "0.0.0"
 edition = "2024"
 description = "RABSody - a Rust CLI for curating an Audiobookshelf (ABS) library"
 license = "BSD-2-Clause"
-rust-version = "1.94"
+rust-version = "1.97"
 
 [[bin]]
 name = "rabsody"

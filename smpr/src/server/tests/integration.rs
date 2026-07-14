@@ -6,7 +6,7 @@ use super::super::detect_server_type;
 use crate::config::ServerType;
 
 fn uat_enabled() -> bool {
-    std::env::var("SMPR_UAT_TEST").map_or(false, |v| v == "1")
+    std::env::var("SMPR_UAT_TEST").is_ok_and(|v| v == "1")
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn emby_list_genres() {
     // Verify sorted (case-insensitive)
     let sorted: Vec<String> = {
         let mut g = genres.clone();
-        g.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        g.sort_by_key(|a| a.to_lowercase());
         g
     };
     assert_eq!(genres, sorted);
