@@ -44,12 +44,42 @@ the roots you scan and the state dir you choose.
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
+
+
+class _DeferInterrupt:
+    """SIGINT handler for the apply loop: the first Ctrl-C sets a flag (checked at
+    the next file boundary) so the in-flight tag write finishes instead of being
+    torn; a second Ctrl-C restores default handling and exits immediately."""
+
+    def __init__(self):
+        self.flag = False
+
+    def __call__(self, signum, frame):
+        self.flag = True
+        signal.signal(signal.SIGINT, signal.SIG_DFL)  # next Ctrl-C exits now
+        print("\ninterrupt: finishing the current file, then stopping "
+              "(Ctrl-C again to force)...", file=sys.stderr)
+
+
+def _write_durable(path, text):
+    """Write text and fsync it, so a crash can't leave a torn recovery file."""
+    path.write_text(text, encoding="utf-8")
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass  # fsync unsupported (some network mounts); the write still landed
 
 MB_API = "https://musicbrainz.org/ws/2/artist/{}?fmt=json"
 USER_AGENT = "media-automation-albumartist-repair/1.0 ( https://github.com/doxazo-net/media-automation )"
@@ -93,14 +123,19 @@ class Adapter:
     def __init__(self, path):
         from mutagen.flac import FLAC
         from mutagen.id3 import ID3
+        from mutagen.oggopus import OggOpus
         from mutagen.oggvorbis import OggVorbis
 
         self.path = path
         ext = path.suffix.lower()
         if ext == ".flac":
             self.kind, self.f = "vorbis", FLAC(path)
-        elif ext in (".ogg", ".oga", ".opus"):
+        elif ext in (".ogg", ".oga"):
             self.kind, self.f = "vorbis", OggVorbis(path)
+        elif ext == ".opus":
+            # Opus streams need OggOpus; OggVorbis rejects them. Both use Vorbis
+            # comments, so the "vorbis" read/write paths below are identical.
+            self.kind, self.f = "vorbis", OggOpus(path)
         elif ext == ".mp3":
             self.kind, self.f = "id3", ID3(path)
         else:
@@ -205,11 +240,16 @@ class NameResolver:
 # ------------------------------------------------------------------- passes
 
 def walk(roots):
+    # Resolve to an absolute path so manifest entries are independent of the
+    # working directory, and dedupe so repeated / nested roots never yield (and
+    # later re-backup) the same file twice.
+    seen = set()
     for root in roots:
         for dirpath, _, files in os.walk(root):
             for fn in files:
-                p = Path(dirpath) / fn
-                if p.suffix.lower() in AUDIO_EXT:
+                p = (Path(dirpath) / fn).resolve()
+                if p.suffix.lower() in AUDIO_EXT and p not in seen:
+                    seen.add(p)
                     yield p
 
 
@@ -218,7 +258,11 @@ def find_broken(roots):
     for p in walk(roots):
         try:
             adapter = Adapter(p)
-            names, mbids = adapter.album_artists(), adapter.album_artist_mbids()
+            names = adapter.album_artists()
+            # Distinct MBIDs only: a single artist whose MBID is listed twice
+            # must not satisfy the >1 defect signature. dict.fromkeys keeps
+            # credit order.
+            mbids = list(dict.fromkeys(adapter.album_artist_mbids()))
         except Exception:  # noqa: BLE001 - unreadable file, skip and count
             errors += 1
             continue
@@ -264,38 +308,65 @@ def cmd_repair(args):
                 resolver.flush()
         resolver.flush()
 
-    stamp = time.strftime("%Y%m%dT%H%M%S")
+    # UUID suffix so two apply runs in the same second cannot share a manifest
+    # path and clobber each other's recovery metadata.
+    stamp = f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     backups = args.state_dir / "backups"
-    manifest, skipped, changed = [], 0, 0
+    skipped, changed = 0, 0
 
-    for p, joined, mbids in broken:
-        names = [resolver.name(m) for m in mbids]
-        if any(n is None for n in names):
-            print(f"  SKIP (unresolved MBID): {p}")
-            skipped += 1
-            continue
-        if not args.apply:
-            print(f"  {joined}\n    -> {names}")
-            changed += 1
-            continue
-        adapter = Adapter(p)
-        snap = adapter.snapshot()
-        backups.mkdir(parents=True, exist_ok=True)
-        bkey = f"{abs(hash(str(p))):016x}-{p.name}.json"
-        backup_path = (backups / bkey).resolve()
-        backup_path.write_text(
-            json.dumps({"path": str(p), "snapshot": snap}, indent=1, ensure_ascii=False)
-        )
-        adapter.write_album_artists(names)
-        manifest.append({"path": str(p), "backup": str(backup_path),
-                         "was": joined, "now": names})
-        changed += 1
-
+    manifest_path = None
+    manifest_f = None
+    interrupt = None
+    prev_handler = None
+    stopped_early = False
     if args.apply:
         args.state_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = args.state_dir / f"manifest-{stamp}.json"
-        manifest_path.write_text(json.dumps(manifest, indent=1, ensure_ascii=False))
-        print(f"\nrepaired {changed}, skipped {skipped}")
+        backups.mkdir(parents=True, exist_ok=True)
+        # JSON Lines, appended durably per file BEFORE that file is mutated, so an
+        # interruption always leaves a restorable entry for everything touched.
+        manifest_path = args.state_dir / f"manifest-{stamp}.jsonl"
+        manifest_f = open(manifest_path, "a", encoding="utf-8")
+        interrupt = _DeferInterrupt()
+        prev_handler = signal.signal(signal.SIGINT, interrupt)
+
+    try:
+        for p, joined, mbids in broken:
+            if interrupt is not None and interrupt.flag:
+                stopped_early = True
+                break
+            names = [resolver.name(m) for m in mbids]
+            if any(n is None for n in names):
+                print(f"  SKIP (unresolved MBID): {p}")
+                skipped += 1
+                continue
+            if not args.apply:
+                print(f"  {joined}\n    -> {names}")
+                changed += 1
+                continue
+            adapter = Adapter(p)
+            snap = adapter.snapshot()
+            bkey = f"{abs(hash(str(p))):016x}-{p.name}.json"
+            backup_path = (backups / bkey).resolve()
+            _write_durable(backup_path, json.dumps(
+                {"path": str(p), "snapshot": snap}, indent=1, ensure_ascii=False))
+            # Record recovery metadata and flush it to disk BEFORE mutating the
+            # audio file -- if write_album_artists() or the process dies next, the
+            # manifest still points at a valid backup for this file.
+            entry = {"path": str(p), "backup": str(backup_path), "was": joined, "now": names}
+            manifest_f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            manifest_f.flush()
+            os.fsync(manifest_f.fileno())
+            adapter.write_album_artists(names)
+            changed += 1
+    finally:
+        if manifest_f is not None:
+            manifest_f.close()
+        if prev_handler is not None:
+            signal.signal(signal.SIGINT, prev_handler)
+
+    if args.apply:
+        verb = "stopped early after" if stopped_early else "repaired"
+        print(f"\n{verb} {changed}, skipped {skipped}")
         print(f"manifest: {manifest_path}")
         print(f"restore with: {sys.argv[0]} restore {manifest_path}")
     else:
@@ -304,11 +375,16 @@ def cmd_repair(args):
 
 
 def cmd_restore(args):
-    manifest = json.loads(Path(args.manifest).read_text())
-    for entry in manifest:
+    entries = []
+    with open(args.manifest, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:  # tolerate a torn final line from an interrupted apply
+                entries.append(json.loads(line))
+    for entry in entries:
         snap = json.loads(Path(entry["backup"]).read_text())["snapshot"]
         Adapter(Path(entry["path"])).restore(snap)
-    print(f"restored {len(manifest)} files")
+    print(f"restored {len(entries)} files")
 
 
 # --------------------------------------------------------------------- main
@@ -345,7 +421,14 @@ def main():
     if args.cmd in ("scan", "repair") and not args.roots:
         ap.error("no library roots given; pass --root DIR (repeatable) or set MUSIC_ROOTS")
     ensure_mutagen(allow_bootstrap=not args.no_bootstrap)
-    args.fn(args)
+    try:
+        args.fn(args)
+    except KeyboardInterrupt:
+        # repair --apply defers SIGINT to a file boundary and reports itself; this
+        # is the clean exit for scan / dry-run / restore (and a forced second
+        # Ctrl-C), instead of a traceback.
+        print(f"\n{args.cmd} aborted.", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":
