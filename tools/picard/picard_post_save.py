@@ -472,7 +472,14 @@ def main():
     # =================================================================
     flac_files = find_flacs(album_dir)
 
-    if flac_files and preflight_flac():
+    # Probe once and branch on the stored answer. Calling preflight_flac() in
+    # both the if and the elif is not just a second `flac --version`: the two
+    # calls are independent, so if they ever disagree neither branch runs and
+    # the rip check is skipped with no warning at all -- the silent-pass mode
+    # this gate exists to avoid.
+    flac_available = preflight_flac() if flac_files else False
+
+    if flac_files and flac_available:
         confirmed_corrupt: list[tuple[str, str]] = []
         tool_errors: list[tuple[str, str]] = []
 
@@ -536,7 +543,7 @@ def main():
         else:
             _log(f"All {verified} FLAC(s) verified clean")
 
-    elif flac_files and not preflight_flac():
+    elif flac_files:
         _log("WARNING: flac not available, skipping rip check. Files left intact.")
     # else: no FLACs, nothing to check
 

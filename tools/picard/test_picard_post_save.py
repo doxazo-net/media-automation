@@ -7,6 +7,8 @@ without them. The rip check is what deletes audio, so those tests matter most:
 do not let them silently skip everywhere.
 """
 
+import contextlib
+import io
 import os
 import shlex
 import shutil
@@ -441,6 +443,56 @@ class TestStreamTesting(unittest.TestCase):
         self.assertEqual(status, mod.StreamStatus.TOOL_ERROR)
 
 
+@unittest.skipUnless(HAVE_FLAC and HAVE_FFMPEG, "needs flac and ffmpeg")
+class TestPreflightBranching(unittest.TestCase):
+    """The rip check must always either run or announce that it did not.
+
+    preflight was once evaluated separately in the `if` and the `elif`. Two
+    independent probes can disagree, and in one of the four combinations
+    (first says no, second says yes) NEITHER branch runs: no check and no
+    warning. That is the silent pass this gate exists to prevent, so the
+    branching is pinned directly rather than through a subprocess stub.
+    """
+
+    def _run_main(self, folder, probe_results):
+        """Run main() with preflight_flac stubbed, returning its stdout."""
+        buf = io.StringIO()
+        with mock.patch.object(
+                mod, "preflight_flac", side_effect=list(probe_results)), \
+                mock.patch.object(mod, "run_covit", return_value=True), \
+                mock.patch.object(sys, "argv", ["picard_post_save.py", folder]), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(buf):
+            with self.assertRaises(SystemExit):
+                mod.main()
+        return buf.getvalue()
+
+    def test_disagreeing_probes_cannot_produce_a_silent_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(make_flac(os.path.join(tmp, "01.flac")))
+            # First probe says no, second says yes: the dangerous combination.
+            # Only one probe is consumed now, so the extra value is unused.
+            output = self._run_main(tmp, [False, True])
+
+        self.assertTrue(
+            "verified clean" in output or "flac not available" in output,
+            f"gate passed silently -- neither checked nor warned:\n{output}",
+        )
+
+    def test_probe_is_consumed_exactly_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(make_flac(os.path.join(tmp, "01.flac")))
+            # A single available value: a second call raises StopIteration.
+            output = self._run_main(tmp, [True])
+        self.assertIn("verified clean", output)
+
+    def test_unavailable_flac_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(make_flac(os.path.join(tmp, "01.flac")))
+            output = self._run_main(tmp, [False])
+        self.assertIn("flac not available", output)
+
+
 class TestDeleteAudioFiles(unittest.TestCase):
     def test_deletes_audio_and_keeps_everything_else(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -607,6 +659,17 @@ class TestEndToEnd(unittest.TestCase):
                 os.path.exists(os.path.join(tmp, mod.LOG_FILENAME)),
                 "a tombstone was left that would condemn any re-rip",
             )
+
+    def test_missing_flac_always_warns_and_never_skips_silently(self):
+        """The no-flac branch must be reachable and must announce itself."""
+        with tempfile.TemporaryDirectory() as tmp:
+            track = os.path.join(tmp, "01.flac")
+            self.assertTrue(make_flac(track))
+            result = self._run_script(tmp, env={"PATH": ""})
+
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("flac not available", result.stdout + result.stderr)
+            self.assertTrue(os.path.isfile(track))
 
     def test_missing_directory_exits_nonzero(self):
         result = self._run_script("/nonexistent/path/xyz")
