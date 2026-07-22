@@ -137,8 +137,21 @@ re-ripping.**
 | `COVIT_BIN` | `/config/covit` | path to the covit binary |
 | `COVIT_ADDRESS` | `covers.musichoarders.xyz` | cover art server |
 
-`RIPCHECK_LOG_ONLY=1` is the safe way to trial the gate on a real library: it
-reports what it would have deleted and leaves everything in place.
+### Detect-only mode
+
+`RIPCHECK_LOG_ONLY=1` reports what would have been deleted and leaves every
+file in place. It is honored on **both** deletion paths - a fresh corruption
+verdict and the stale-`CORRUPT_RIP.log` fast path - so with it set the script
+never removes audio at all.
+
+This is a supported permanent posture, not only a way to trial the gate. On a
+large library, detection without automated deletion is a reasonable trade: you
+still get the log and the flagged folder, and you decide what to do about it.
+
+One consequence to know: a flagged folder keeps exiting non-zero on every
+later run until `CORRUPT_RIP.log` is deleted, so covit never runs there and the
+album gets no cover art. If an album mysteriously has no artwork, look for that
+file.
 
 ## Tests
 
